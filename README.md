@@ -60,6 +60,8 @@ pnpm install
 
 从 [docs/index.md](./docs/index.md) 开始；开发环境、命令、检查范围和包边界见 [docs/development.md](./docs/development.md)。
 
+core 的模块与接口讨论见 [core 包设计草案](./docs/specs/core.md)。
+
 ## License
 
 [MIT](./LICENSE)。版权归属沿用模板来源，见 `LICENSE`。
