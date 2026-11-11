@@ -1,0 +1,17 @@
+# Raw HAR recordings contain cookies, signed credentials, and possibly passwords
+*.har
+har-report*.txt
+
+node_modules/
+dist/
+.DS_Store
+
+# Build output, caches, and local tooling files
+.cache
+.idea
+*.log
+*.tgz
+coverage
+lib-cov
+logs
+temp
