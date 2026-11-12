@@ -2,7 +2,7 @@
 
 my-dlsite 项目的 pnpm workspace monorepo，私有根包名为 `my-dlsite-monorepo`。
 
-`packages/core`（`@my-dlsite/core`）已实现 CORE-01：现有 Play 会话 → 作品库 → 文件清单 → 播放地址。CORE-02 的单 ZIP 下载计划尚未实现，将在 CORE-01 合并后从最新 main 开始；CORE-01 不暴露 `acquisition` 方法或占位模块。
+`packages/core`（`@my-dlsite/core`）已实现 CORE-01（现有 Play 会话 → 作品库 → 文件清单 → 播放地址）和 CORE-02 的已观察单 ZIP 原版下载计划（`client.acquisition.plan`）。下载器、文件传输、解压和序列号流程仍由调用方负责，不在 core 内实现。
 
 ## 技术栈
 
@@ -32,7 +32,7 @@ pnpm install
 ```text
 .
 ├── docs/               # 文档，入口见 docs/index.md
-├── packages/core/      # CORE-01 业务实现与测试
+├── packages/core/      # core 业务实现与测试
 ├── .vscode/            # 编辑器配置
 ├── AGENTS.md           # Agent 工作指南
 ├── package.json        # 私有根包与工作区命令
@@ -65,7 +65,7 @@ pnpm install
 
 从 [docs/index.md](./docs/index.md) 开始；开发环境、命令、检查范围和包边界见 [docs/development.md](./docs/development.md)。
 
-core 的实现状态、接口、验证依据与 CORE-02 边界见 [core 包设计](./docs/specs/core.md)。
+core 的实现状态、接口、验证依据与下载计划边界见 [core 包设计](./docs/specs/core.md)。
 
 ## License
 
