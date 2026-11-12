@@ -442,4 +442,26 @@ describe("auth", () => {
     expect(() => harness.auth.beginOperation()).toThrow(AuthRequired)
     expect(calls).toBe(afterValidateCalls)
   })
+
+  it("does not invalidate the session when the caller aborts an auth failure", async () => {
+    const harness = authHarness(salesHandler())
+    await harness.auth.importCookies([playSessionCookie()])
+    harness.server.calls.length = 0
+    const controller = new AbortController()
+
+    await expect(
+      harness.auth.operation(
+        async () => {
+          controller.abort()
+          throw new AuthRequired("test")
+        },
+        { signal: controller.signal },
+      ),
+    ).rejects.toBeInstanceOf(Aborted)
+
+    await expect(harness.auth.validate()).resolves.toBeUndefined()
+    expect(
+      harness.server.calls.some((call) => call.url.pathname === salesPath),
+    ).toBe(true)
+  })
 })

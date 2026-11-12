@@ -8,25 +8,26 @@ import {
 } from "../src/index.js"
 
 describe("package entry", () => {
-  it("exposes one client with the CORE-01 modules and no acquisition surface", () => {
+  it("exposes one client with the implemented modules and no internal surfaces", () => {
     const client = createClient({
       fetch: async () => {
         throw new Error("not used")
       },
     })
     expect(Object.keys(client).sort()).toEqual([
+      "acquisition",
       "auth",
       "library",
       "manifest",
       "playback",
     ])
-    expect("acquisition" in client).toBe(false)
     expect("transport" in client).toBe(false)
     expect("access" in client).toBe(false)
     expect(typeof client.auth.importCookies).toBe("function")
     expect(typeof client.auth.restore).toBe("function")
     expect(typeof client.auth.export).toBe("function")
     expect(typeof client.auth.validate).toBe("function")
+    expect(typeof client.acquisition.plan).toBe("function")
     expect(typeof client.library.list).toBe("function")
     expect(typeof client.manifest.get).toBe("function")
     expect(typeof client.playback.resolve).toBe("function")

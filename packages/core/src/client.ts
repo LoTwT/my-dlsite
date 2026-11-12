@@ -1,4 +1,5 @@
 import { Access } from "./access.js"
+import { Acquisition } from "./acquisition.js"
 import { Auth } from "./auth.js"
 import { InvalidInput } from "./errors.js"
 import { type Clock, systemClock } from "./internal/clock.js"
@@ -55,10 +56,11 @@ export function createClientInternal(
     options.language ?? DEFAULT_LANGUAGE,
   )
   const playback = new Playback(auth, access, manifest)
+  const acquisition = new Acquisition(transport, auth)
   clearCaches = () => {
     access.clear()
     manifest.clear()
   }
 
-  return { auth, library, manifest, playback }
+  return { auth, acquisition, library, manifest, playback }
 }

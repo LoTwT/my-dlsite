@@ -159,6 +159,9 @@ export class Auth implements AuthApi {
       return result
     } catch (error) {
       if (!this.isCurrent(context)) throw new SessionChanged()
+      // A canceled operation must not turn an observed auth failure into
+      // session invalidation; the next operation can validate again.
+      if (options.signal?.aborted === true) throw new Aborted()
       if (error instanceof AuthRequired) {
         this.markInvalid(context)
       }

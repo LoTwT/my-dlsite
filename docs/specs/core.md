@@ -1,18 +1,18 @@
 # core 包设计与实现状态
 
-状态：CORE-01 已在 `packages/core` 实现（2026-11-12）：会话恢复、作品库、文件清单与播放地址；作品库全量购买读取按同日读取的第一方前端流程实现。CORE-02 的单 ZIP 下载计划尚未实现，须在 CORE-01 合并后从最新 main 开始；CORE-01 不暴露 `acquisition` 方法、占位模块或下载计划能力。
+状态：CORE-01 与 CORE-02 已在 `packages/core` 实现（2026-11-12）。CORE-01 提供会话恢复、作品库、文件清单与播放地址；CORE-02 提供已观察的单 ZIP 原版下载计划。作品库全量购买读取按同日读取的第一方前端流程实现；下载计划只覆盖已观察的 play → www → download 路径，下载、解压和分卷流程不在 core 内。
 
-本稿沿用此前确认的七个模块，并合入脱敏 HAR 结论、2026-11-12 的一次受限真实观察与同日公开前端副本核对。公开接口已冻结为 `packages/core` 的 TypeScript 声明；尚未实现的能力只记录在后续能力表中，不以假接口出现。
+本稿沿用此前确认的七个模块，并合入脱敏 HAR 结论、2026-11-12 的一次受限真实观察与同日公开前端副本核对。公开接口以 `packages/core` 的 TypeScript 声明为准；尚未实现的能力只记录在后续能力表中，不以假接口出现。
 
 阅读顺序：先看范围、验证依据和模块划分；接口与运行流程用于调用方式；后续能力与验收要求列在文档后半部分。实际命令与包配置见[开发指南](../development.md)。
 
 ## 范围与运行环境
 
-core 是供 CLI、播放器插件和其他应用调用的 DLsite 已购音声核心库，放在 `packages/core`（包名 `@my-dlsite/core`，私有、不发布）。CORE-01 负责会话管理、查询作品、解释文件清单和生成播放地址；原版下载计划属于 CORE-02，尚未实现。
+core 是供 CLI、播放器插件和其他应用调用的 DLsite 已购音声核心库，放在 `packages/core`（包名 `@my-dlsite/core`，私有、不发布）。CORE-01 负责会话管理、查询作品、解释文件清单和生成播放地址；CORE-02 负责已观察的单 ZIP 原版下载计划。
 
-播放器、文件传输、续传、解压和数据持久化由调用方负责。core 不处理图片解扰、音频解密或 DRM 绕过，也不承载界面和 CLI 命令。
+播放器、下载器、文件传输、续传、解压和数据持久化由调用方负责。core 不处理图片解扰、音频解密或 DRM 绕过，也不承载界面和 CLI 命令。
 
-包使用 ESM、TypeScript 严格模式和 `noUncheckedIndexedAccess`，运行时兼容目标为 Node.js `>=24.11`，并已在 Node.js `24.11.1` 上验证构建产物入口。根目录的开发环境要求见[开发指南](../development.md)；core 的运行时下限不因此抬高。
+包使用 ESM、TypeScript 严格模式和 `noUncheckedIndexedAccess`，运行时兼容目标为 Node.js `>=24.11`，并已在 Node.js `24.11.0` 上验证构建产物入口与全部测试（CORE-01 基线另在 `24.11.1` 上验证过）。根目录的开发环境要求见[开发指南](../development.md)；core 的运行时下限不因此抬高。
 
 原生 `fetch`、`AbortSignal` 负责 HTTP、取消和超时；Cookie Jar 使用 `tough-cookie`，外部结构校验使用 Valibot。实际声明在子包：`tough-cookie@^6.1.0`、`valibot@^1.5.0`；开发工具为 `typescript@^6.0.3`、`vitest@^5.1.0`、`@types/node@24.11.2`。根目录不增加 TypeScript 编译器、Node 类型依赖或共享 TS 配置。Node.js 24.11 已提供所需的 `fetch`、`AbortSignal.any` 和 `AbortSignal.timeout`。[Node.js 文档](https://nodejs.org/download/release/v24.11.0/docs/api/globals.html)
 
@@ -20,15 +20,19 @@ core 是供 CLI、播放器插件和其他应用调用的 DLsite 已购音声核
 
 下表来自此前的脱敏 HAR 报告、2026-11-12 的一次受限真实观察，以及同日对三个公开第一方 JavaScript 副本的只读核对。除这些观察外没有重新请求 DLsite；这些是已观察到的样本行为，不是 DLsite 的公开接口保证。
 
-| 能力         | 已观察到的事实                                                                                                                                                                                                                     | 对本设计的约束                                                                      |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| 会话与批次   | 单一 host-only `play_session` 导入隔离 Jar 后，v4 `content/sales`（该次请求省略 `last`）返回 200 JSON；works 使用 `application/json` 对象 `{worknos:[...]}`，10 条与 2 条请求的每个 workId 都各返回一次；Set-Cookie 只留在候选内存 | 支持现有 Play 会话导入；使用 10 条 works 批次；不从该观察推断作品库完整性或批次上限 |
-| 作品签名     | v4 `download/sign/url` 返回 `Policy`、`Signature`、`Key-Pair-Id`；签名参数单独用于音频和 `ziptree.json` 都成功                                                                                                                     | 统一采用 URL 签名，CDN 请求不附带登录 Cookie                                        |
-| 优化音频     | 样本为 MP3，响应支持 Range，直接由内容域名返回；定向请求读到了 MP3 文件头                                                                                                                                                          | 首先支持这条渐进式音频路径，不推广为所有音轨都未加密                                |
-| 文件清单     | 顶层包含 `version`、`workno`、`revision`、`hash`、`updated_at`、`tree`、`playfile`；树节点通过 `hashname` 关联文件信息                                                                                                             | 按实际结构解析，不套用第三方旧版的 `files.optimized` 路径                           |
-| 作品库       | v4 `content/count`、`content/sales`、`content/works` 已观察到；`works` 是 POST，请求体包含 `worknos`；音声类型为 `SOU`                                                                                                             | 使用 v4；读取作品元数据与购买记录分开处理                                           |
-| 不完整元数据 | `sales` 中有部分作品没有对应的 `works` 元数据                                                                                                                                                                                      | 不静默丢弃这些购买记录，也不猜测其缺失原因                                          |
-| 原版下载     | 已观察到 `play` → `www` → `download` 的单 ZIP 跳转；`www` 响应会更新 Cookie；最终请求携带 Cookie                                                                                                                                   | 下载计划与播放签名采用不同的凭据路径；留给 CORE-02                                  |
+| 能力         | 已观察到的事实                                                                                                                                                                                                                     | 对本设计的约束                                                                                    |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| 会话与批次   | 单一 host-only `play_session` 导入隔离 Jar 后，v4 `content/sales`（该次请求省略 `last`）返回 200 JSON；works 使用 `application/json` 对象 `{worknos:[...]}`，10 条与 2 条请求的每个 workId 都各返回一次；Set-Cookie 只留在候选内存 | 支持现有 Play 会话导入；使用 10 条 works 批次；不从该观察推断作品库完整性或批次上限               |
+| 作品签名     | v4 `download/sign/url` 返回 `Policy`、`Signature`、`Key-Pair-Id`；签名参数单独用于音频和 `ziptree.json` 都成功                                                                                                                     | 统一采用 URL 签名，CDN 请求不附带登录 Cookie                                                      |
+| 优化音频     | 样本为 MP3，响应支持 Range，直接由内容域名返回；定向请求读到了 MP3 文件头                                                                                                                                                          | 首先支持这条渐进式音频路径，不推广为所有音轨都未加密                                              |
+| 文件清单     | 顶层包含 `version`、`workno`、`revision`、`hash`、`updated_at`、`tree`、`playfile`；树节点通过 `hashname` 关联文件信息                                                                                                             | 按实际结构解析，不套用第三方旧版的 `files.optimized` 路径                                         |
+| 作品库       | v4 `content/count`、`content/sales`、`content/works` 已观察到；`works` 是 POST，请求体包含 `worknos`；音声类型为 `SOU`                                                                                                             | 使用 v4；读取作品元数据与购买记录分开处理                                                         |
+| 不完整元数据 | `sales` 中有部分作品没有对应的 `works` 元数据                                                                                                                                                                                      | 不静默丢弃这些购买记录，也不猜测其缺失原因                                                        |
+| 原版下载     | 已观察到 `play` → `www` → `download` 的单 ZIP 跳转；`www` 响应会更新 Cookie；最终请求携带 Cookie                                                                                                                                   | CORE-02 按此路径生成计划；下载计划与播放签名采用不同的凭据路径；凭据最小集合与文件 URL 寿命未验证 |
+
+主控于 2026-11-12T08:31:25Z..08:33:05Z 对 `https://play.dlsite.com/` 做了匿名有界静态读取（1 HTML + 5 JS，无 Cookie/Authorization、无业务 API、无下载/登录、无 source map、未执行脚本）。当前 HTML 引用 `/assets/manifest-05c46c0d.js`；manifest 的 `work/:workno` 路由为 `/assets/_route-main-XNvxsNhj.js`，其 imports 含 `work-info.gJIGWdlK.chunk.js` 与 `work-common.RJUHEloo.chunk.js`。work-info 的 ZIP 菜单项与作品详情下载按钮均调用 `Y(work, "zip", ...)`；`Y` 调用 `window.open(me(work, method))`；work-common 导出的 `n`（源 `b`）先以 `URLSearchParams` 设置 `workno`，存在 method 时再设置 `method`，返回 `/api/v3/download?` 加查询串。因此本包单 ZIP 入口固定为 `GET https://play.dlsite.com/api/v3/download?workno=<workId>&method=zip`；移动页面的 `sp_page` 不在 CORE-02 范围。
+
+关键源副本：`https://play.dlsite.com/js/work-info.gJIGWdlK.chunk.js`（12286 bytes，SHA-256 `41303f7320d3c4d6321ab44422ad6a528a842264dfbc8e2db4885c577bb046e4`）与 `https://play.dlsite.com/js/work-common.RJUHEloo.chunk.js`（2591 bytes，SHA-256 `5fb90fae95e8fff10fd65dc24d9d648b6a7fefdafba7fcaa9ceb0a959f93d8d2`）。这是当前公开前端版本的客户端入口形态，不替换 CORE-01 早间读取的旧版本/hash；两批证据的来源与时间独立。没有真实请求新的 `method=zip` 路径，未证明省略 method 与显式传值等价，也未证明凭据最小集合、URL 寿命、最终文件可下载或服务端永久正确；缺少 fresh live 本身不是门禁。
 
 2026-11-12 另直接读取了当前公开前端副本，用于核对全量购买读取流程。读取时未发送 Cookie 或 Authorization，不跟随跳转、不重试，不执行脚本，也不加载 import 或 source map；没有调用业务 API：
 
@@ -44,23 +48,23 @@ core 是供 CLI、播放器插件和其他应用调用的 DLsite 已购音声核
 
 `library.list` 已按上述第一方流程对齐：count 与 sales 显式使用 `last=0`；`count.user == 0` 时不请求 sales，返回空购买快照；`count.user > 0` 时只请求一次 sales，并按 sales 返回的全部 workno 分批请求 works。count 不作为数组截断或长度校验条件；count 与 sales 长度不一致时仍处理 sales 返回的全部购买记录。sales 结构错误、任一 works 批次失败、会话替换或取消都会使整次 list 失败，不返回半份快照。快照由多次请求组合而成，不是跨请求的原子视图。
 
-业务请求涉及 `play.dlsite.com`、`www.dlsite.com`；签名内容请求涉及 `play.dl.dlsite.com`；已观察到的原版文件目标为 `download.dlsite.com`。每条流程只接受预期的 HTTPS 服务目标，并限制到该流程的已知 API path；CDN 只能访问当前 ResourceContext 的 grant 基址前缀。已知登录跳转在发送后续 Cookie 前分类；不把任意同 host 路径当作可携带凭据的目标。认证错误按请求上下文分类：只有 Play 会话请求的 401/登录跳转会使 Play 会话失效；签名 CDN 或匿名请求的 401 保留为对应 HTTP 错误，不影响 Play 登录态。
+业务请求涉及 `play.dlsite.com`、`www.dlsite.com`；签名内容请求涉及 `play.dl.dlsite.com`；已观察到的原版文件目标为 `download.dlsite.com`。每条流程只接受预期的 HTTPS 服务目标，并限制到该流程的已知 API path；CDN 只能访问当前 ResourceContext 的 grant 基址前缀。下载计划同样逐跳限制：Play 入口只接受 `/api/v3/download`，随后只接受已观察的 `www` 下载页，最终只在 `download.dlsite.com` 的已观察单 ZIP 路径停止；最终 URL 不请求。已知登录跳转在发送后续 Cookie 前分类；不把任意同 host 路径当作可携带凭据的目标。认证错误按请求上下文分类：只有 Play 会话请求的 401/登录跳转会使 Play 会话失效；签名 CDN 或匿名请求的 401 保留为对应 HTTP 错误，不影响 Play 登录态。原版下载入口属于 Play 会话请求；`www` 步骤的 401/403 保留为 `HttpError`，主站登录跳转按 `UnexpectedResponse("login_redirect")` 处理，均不使 Play 会话失效。
 
 ## 模块与依赖
 
 七个模块属于同一个 core 包，不拆成七个 workspace 子包。`model`、`errors` 和 `client` 分别放共享契约、错误定义与组装入口，不算新的业务模块。
 
-| 模块          | 职责                                                                        | 边界                                                                |
-| ------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `transport`   | HTTP、手动重定向、按 host 调度、超时、取消、脱敏；按请求上下文读写 Cookie   | 不持有会话，不根据通用状态码决定业务含义                            |
-| `auth`        | 持有和替换 Session；导入 Cookie、导出与恢复快照、初始化 Play 会话、校验会话 | 不管理作品签名，不自动重新登录                                      |
-| `access`      | 申请作品 Grant、解析有效期、缓存、刷新、合并同作品的并发申请                | 不解释文件内容；签名参数不进入 Cookie Jar                           |
-| `library`     | 获取购买记录和作品元数据；音声筛选、本地化、报告缺失或异常条目              | 不保存作品库，不把未返回的元数据解释为作品已删除                    |
-| `manifest`    | 获取并解析 `ziptree`；生成文件树；纯函数识别音轨、字幕和版本候选            | 不替调用方选择最终版本，不生成长期有效的播放地址                    |
-| `playback`    | 将已选音轨和当前 Grant 解析为 `MediaSource`                                 | 不播放、不下载，默认不探测音频内容                                  |
-| `acquisition` | CORE-02 计划：解析原版下载入口与跳转，生成 `AcquisitionPlan`                | 当前不实现、不暴露；不传输和解压文件，不复用播放 Grant 充当下载认证 |
+| 模块          | 职责                                                                        | 边界                                                            |
+| ------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `transport`   | HTTP、手动重定向、按 host 调度、超时、取消、脱敏；按请求上下文读写 Cookie   | 不持有会话，不根据通用状态码决定业务含义                        |
+| `auth`        | 持有和替换 Session；导入 Cookie、导出与恢复快照、初始化 Play 会话、校验会话 | 不管理作品签名，不自动重新登录                                  |
+| `access`      | 申请作品 Grant、解析有效期、缓存、刷新、合并同作品的并发申请                | 不解释文件内容；签名参数不进入 Cookie Jar                       |
+| `library`     | 获取购买记录和作品元数据；音声筛选、本地化、报告缺失或异常条目              | 不保存作品库，不把未返回的元数据解释为作品已删除                |
+| `manifest`    | 获取并解析 `ziptree`；生成文件树；纯函数识别音轨、字幕和版本候选            | 不替调用方选择最终版本，不生成长期有效的播放地址                |
+| `playback`    | 将已选音轨和当前 Grant 解析为 `MediaSource`                                 | 不播放、不下载，默认不探测音频内容                              |
+| `acquisition` | 解析原版下载入口与跳转，生成 `AcquisitionPlan`                              | 不传输和解压文件；不请求最终文件；不复用播放 Grant 充当下载认证 |
 
-CORE-01 实现 `transport`、`auth`、`access`、`library`、`manifest`、`playback`；`acquisition` 只是 CORE-02 的职责方向，不在当前 Client 或包入口出现。
+CORE-01 实现 `transport`、`auth`、`access`、`library`、`manifest`、`playback`；CORE-02 实现 `acquisition`。`transport` 和 `access` 仍是内部模块。
 
 ```text
 调用方
@@ -71,7 +75,7 @@ createClient（组装共享上下文）
   +-- library -------- transport
   +-- manifest ------- access ------- transport
   +-- playback ------- access
-  +-- acquisition ---- transport        （CORE-02，当前未实现）
+  +-- acquisition ---- transport
 
 共享契约：model / errors
 会话状态：由 auth 持有；其他模块通过共享 SessionContext 使用
@@ -84,7 +88,7 @@ createClient（组装共享上下文）
 
 实现只提供一个包入口，通过 `createClient` 组装能力。`transport` 和 `access` 保持内部模块，不因为存在模块目录就暴露同名公开命名空间。公开类型与错误从包入口导出，不提供深层导入路径。
 
-以下为已冻结的公开入口；实际 TypeScript 声明以 `packages/core/src/index.ts` 为准：
+以下为当前公开入口；实际 TypeScript 声明以 `packages/core/src/index.ts` 为准：
 
 | 入口                        | 输入                                               | 输出与行为                                                                                        |
 | --------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -96,24 +100,24 @@ createClient（组装共享上下文）
 | `client.library.list`       | 语言、作品类型筛选、可选取消信号                   | `LibrarySnapshot`；默认筛选 `SOU`，按 `last=0` 读取全量购买记录                                   |
 | `client.manifest.get`       | workId、可选 `refreshAccess`、可选取消信号         | `WorkManifest`；需要更新资源上下文时可同时重新申请 Grant                                          |
 | `client.playback.resolve`   | 已选 Track、可选 `refreshAccess`、可选取消信号     | `MediaSource`；`refreshAccess` 用于调用方发现地址失效后显式换签名                                 |
-| `client.acquisition.plan`   | CORE-02 计划能力，当前不存在于公开 Client          | CORE-01 不暴露该方法、占位模块或下载计划类型                                                      |
+| `client.acquisition.plan`   | workId、可选取消信号                               | `AcquisitionPlan`；请求 Play 入口并手动跟随 play → www，在最终 download Location 停止，不请求文件 |
 
 所有会发起网络操作的方法接受 `AbortSignal`；缓存命中、返回已有清单或启动共享请求前也要检查取消，预先取消的 signal 不能被当作成功。Client 之间不共享账号状态、作品缓存或 Grant；调用方通常复用一个 Client 完成同一账号的操作。
 
-| 数据              | 保留内容                                                                 | 生命周期                                                                 |
-| ----------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| `Session`         | 固定绝对过期时间的 CookieStore、会话状态及会话代次                       | 内部状态，由 auth 管理；无会话、未知、有效和失效需要区分                 |
-| `SessionSnapshot` | 格式版本、保留 Cookie 作用域及 Jar 实际绝对过期时间                      | 属于登录凭据；Max-Age 不因导出重新计时；不含 Grant、作品清单或密码       |
-| `Grant`           | workId、baseUrl、原样签名参数、expiresAt                                 | 内部短期能力；按当前会话代次与 workId 隔离                               |
-| `LibrarySnapshot` | 匹配筛选的作品、元数据缺失的购买记录、已知非匹配类型的购买记录、逐条诊断 | 一次全量购买读取的结果；不是跨请求原子快照；不声称含有可复用的增量游标   |
-| `ResourceContext` | workId、无签名的资源基址、清单 revision 与 hash                          | 表示一次清单读取所对应的资源版本；不包含 Grant 或签名参数                |
-| `WorkManifest`    | 资源上下文、完整文件树、未知字段、原始媒体对象、音轨、字幕和版本候选     | 不保存签名 URL；调用方可以按原树自行选择                                 |
-| `PlayfileEntry`   | 固定媒体字段、typed optimized、原始 `media` 对象、未知顶层字段           | `media` 保留 audio/text/image/pdf 的嵌套未知事实；未知媒体形态留在 extra |
-| `Track`           | 资源上下文、hashname、原路径、已解析的优化资源信息                       | 与产生它的清单版本绑定；原版格式与优化版格式分别表达                     |
-| `MediaSource`     | url、headers、expiresAt，以及有来源的 MIME、大小等可选信息               | 当前路径的 headers 为空；由调用方交给播放器并在过期时重新解析            |
-| `AcquisitionPlan` | CORE-02 计划类型，当前未声明                                             | 含 Cookie 时属于凭据；有效期未知就不填，不伪造一个 TTL                   |
+| 数据              | 保留内容                                                                            | 生命周期                                                                 |
+| ----------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `Session`         | 固定绝对过期时间的 CookieStore、会话状态及会话代次                                  | 内部状态，由 auth 管理；无会话、未知、有效和失效需要区分                 |
+| `SessionSnapshot` | 格式版本、保留 Cookie 作用域及 Jar 实际绝对过期时间                                 | 属于登录凭据；Max-Age 不因导出重新计时；不含 Grant、作品清单或密码       |
+| `Grant`           | workId、baseUrl、原样签名参数、expiresAt                                            | 内部短期能力；按当前会话代次与 workId 隔离                               |
+| `LibrarySnapshot` | 匹配筛选的作品、元数据缺失的购买记录、已知非匹配类型的购买记录、逐条诊断            | 一次全量购买读取的结果；不是跨请求原子快照；不声称含有可复用的增量游标   |
+| `ResourceContext` | workId、无签名的资源基址、清单 revision 与 hash                                     | 表示一次清单读取所对应的资源版本；不包含 Grant 或签名参数                |
+| `WorkManifest`    | 资源上下文、完整文件树、未知字段、原始媒体对象、音轨、字幕和版本候选                | 不保存签名 URL；调用方可以按原树自行选择                                 |
+| `PlayfileEntry`   | 固定媒体字段、typed optimized、原始 `media` 对象、未知顶层字段                      | `media` 保留 audio/text/image/pdf 的嵌套未知事实；未知媒体形态留在 extra |
+| `Track`           | 资源上下文、hashname、原路径、已解析的优化资源信息                                  | 与产生它的清单版本绑定；原版格式与优化版格式分别表达                     |
+| `MediaSource`     | url、headers、expiresAt，以及有来源的 MIME、大小等可选信息                          | 当前路径的 headers 为空；由调用方交给播放器并在过期时重新解析            |
+| `AcquisitionPlan` | url、filename、按最终 URL 作用域计算的 headers，以及有可靠来源的 MIME、大小、有效期 | 属于下载凭据；headers 只绑定 url；有效期未知就省略，不伪造 TTL           |
 
-播放地址和下载地址是临时能力，调用方不应将其当作作品或音轨的永久标识。CORE-02 的 `AcquisitionPlan` headers 只绑定给定目标，下载器不能将它们无条件转发到其他域名。
+播放地址和下载地址是临时能力，调用方不应将其当作作品或音轨的永久标识。`AcquisitionPlan` 含 Cookie 时属于凭据，`headers` 只绑定计划中的 `url`；调用方不能把它们转发到其他目标，也不应打印计划。
 
 ## 主要运行流程
 
@@ -162,14 +166,17 @@ core 自己读取 CDN 清单遇到 403 时，可以废弃该作品 Grant，重�
 
 ### 生成原版下载计划
 
-1. acquisition 使用登录会话请求原版下载入口，手动解析 play 到 www 的跳转，接收并保存 Cookie 更新。
-2. 当 Location 已指向预期下载域名中可识别的文件 URL 时，停止跟随，按最终目标计算 Cookie 请求头，直接生成计划。
-3. 文件名优先从已确认的 `/file/{filename}/` 路径提取；大小和有效期没有可靠来源时省略。仅凭 URL 和 Cookie 的存在，不声称已经验证文件可下载。
-4. 调用方马上执行下载；认证或地址失效后重新生成计划，而不是永久保存 URL 和 Cookie。
+1. acquisition 固定当前 SessionContext，使用其 Cookie Jar 请求已观察的 `play.dlsite.com/api/v3/download?workno=...&method=zip` 入口，手动解析 play → www 的跳转。每一跳接收 Set-Cookie，并在取得 host 发送资格后按当前 Jar 与目标 Domain/Path/Secure 重算 Cookie；它与播放签名 Grant 是不同凭据流程。
+2. 只跟随已观察的 `www.dlsite.com/home/download/=/product_id/{workId}.html` 页面。未知 host/path、跨作用域目标、带 userinfo、非 HTTPS、端口、循环和缺失/非法 Location 都明确失败；不能把任意同 host 路径当作可携带 Cookie 的目标。
+3. 当 Location 已指向 `download.dlsite.com` 的已观察单 ZIP 路径（`/get/=/.../file/{filename}/_/...`，以及 `/file/{filename}/` 形态）时停止跟随。最终 URL 只接受已观察的 `update_date` 查询键，未知查询键按不支持的交付失败。此时不额外 GET 或 HEAD 最终文件，避免为探测消费可能只能使用一次的 URL；先接收本次响应 Cookie 更新，再按最终 URL 计算计划 headers。
+4. 文件名优先从已确认的 `/file/{filename}/` 路径提取并解码百分号编码，直接文件响应才回退到 `Content-Disposition`。MIME 与大小只在响应头可靠时填写；有效期没有可靠来源时省略，不伪造 TTL。仅凭 URL 和 Cookie 的存在，不声称已经验证文件可下载。
+5. 若入口直接返回受支持的文件响应而不是重定向，读取必要响应头后立即取消 body；取消等待受同一事务期限约束，超时或取消时不返回计划。取消不保证网络接收了零字节，但不能读取或保存文件。不得把 HTML 登录页、序列号页或其他非 ZIP 响应当作 ZIP。
+6. 该流程不实现 Range 或断点下载；意外的 206 局部响应返回 `UnexpectedResponse("partial_content")`，立即尽力取消 body，不把局部 `Content-Length` 当作 `sizeBytes`。
+7. 调用方马上执行下载；认证或地址失效后重新生成计划，而不是永久保存 URL 和 Cookie。
 
-这是对旧稿“跟到最终文件响应头再中止”的调整建议：已能从 Location 确定目标时，不额外 GET 或 HEAD 最终文件，避免为解析地址消耗可能只能使用一次的 URL。若下载入口直接返回文件响应而不是重定向，读取必要响应头后立即取消 body；这不保证网络接收了零字节，但不能读取或保存整个文件。
+原版入口的明确 401 或已知登录跳转按 Play 会话请求处理，返回 `AuthRequired` 并使 Play 会话失效。www 步骤的 401/403 保留为 `HttpError`，主站登录跳转按 `UnexpectedResponse("login_redirect")` 处理，均不使 Play 会话失效。调用方取消优先于认证分类：401/登录跳转清理期间取消返回 `Aborted`，不使 Play 会话失效；会话替换仍优先返回 `SessionChanged`。迟到响应不能修改新代次或返回旧账号的计划；取消或失败不产生计划。
 
-遇到未验证的分卷 HTML、序列号页面或新的交付形式，返回 `UnsupportedDelivery`。不输出尚未核实的文件顺序、序列号或凭据。
+遇到未验证的分卷 HTML、序列号页面或其他交付方式，返回 `UnsupportedDelivery`。不输出尚未核实的文件顺序、序列号或凭据。
 
 ## 请求、状态与错误约束
 
@@ -178,6 +185,8 @@ transport 的实现策略为：Client 内按 host 串行，令牌桶容量 1、�
 仅对 GET 的 429、503 按 `Retry-After` 做一次重试；缺失时等待 1 秒，等待超过剩余期限就停止。POST works 虽然用于读取，首版也不自动重放；其他网络错误不自动重试。401、403 和响应校验错误不进入 transport 的通用重试。
 
 重定向每一跳都重新判断目标与 Cookie 作用域，不原样转发上一跳的 Cookie 或 Authorization；请求方法和请求体按重定向状态处理，无法安全处理的情况直接报错。签名内容请求显式关闭登录凭据。具体重定向语义参考 [Fetch Standard](https://fetch.spec.whatwg.org/#http-redirect-fetch)。
+
+acquisition 使用同一 transport 的手动 hop 原语：整条 play → www 链共用一个 30 秒事务期限、host 串行和一次 429/503 重试预算；它只接受一个可跟随的 www 跳转，最终 download Location 不进入发送队列，也不占用 host 发送资格。metadata 的 body 清理同样受事务信号约束；清理超时或取消不返回计划，host 队列在任务结束时释放。
 
 | 错误                       | 触发条件                                                                                  | 状态影响                                                                 |
 | -------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -200,7 +209,7 @@ User-Agent 默认如实标识本工具；日志默认不输出。启用日志后
 
 ## 交付顺序、已实现范围与后续能力
 
-交付顺序：CORE-01 交付“恢复会话 → 读取作品库 → 选择音轨 → 返回播放地址”；CORE-02 在 CORE-01 合并后从最新 main 开始，独立交付已观察到的单 ZIP 下载计划。下载计划不成为播放路径的依赖，CORE-01 也不暴露其假接口。
+交付顺序：CORE-01 交付“恢复会话 → 读取作品库 → 选择音轨 → 返回播放地址”；CORE-02 独立交付已观察到的单 ZIP 下载计划。下载计划不成为播放路径的依赖；core 不定义尚未实现能力的假接口。
 
 CORE-01 的两项实施前证据已由 2026-11-12 的受限真实观察有限满足：
 
@@ -209,16 +218,15 @@ CORE-01 的两项实施前证据已由 2026-11-12 的受限真实观察有限满
 
 全量购买读取的协议依据已在同日通过公开第一方前端副本定位：初始与强制全量流程均显式使用 `last=0`，count 决定是否进入购买分支，sales 只读取一次，随后完成全部 works 批次；没有 count 与 sales 长度相等的完成断言。实现、合成测试与文档按此流程对齐。该依据支持客户端全量购买读取语义，但不证明服务端永久行为；现有真实样本省略 `last` 且未请求 count，尚无 `last=0` 路径的真实 smoke。
 
-CORE-01 不定义以下能力的假接口或假数据：
+core 不定义以下能力的假接口或假数据：
 
-| 能力                       | 尚缺什么                                             | 进入实现前的条件                                                  |
-| -------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------- |
-| 单 ZIP 下载计划（CORE-02） | 下载入口、分卷/序列号、凭据最小集合与寿命            | CORE-01 合并后从最新 main 开始，补充专项验证与验收                |
-| 账号密码登录与 OTP         | 登录页、挑战、两步验证和 reCAPTCHA 的实际流程        | 主控先组织该流程的专项验证与设计，再补充 auth 的登录结果契约      |
-| 增量同步                   | v4 `last` 的单位、边界、翻页及新增或更新语义         | 主控确认游标不会漏数据后，再提供 sync 与版本化游标                |
-| 分卷与序列号               | 真实页面、分卷顺序、序列号来源和状态转换             | acquisition 有样本和验收用例后，再扩展计划的交付种类              |
-| 原版下载凭据最小集合与寿命 | 哪些 Cookie 必需、是否与 IP 或其他条件绑定、何时失效 | 首版按目标作用域计算 Cookie，有效期保持未知；优化前由主控安排验证 |
-| 其他媒体交付格式           | HLS、不同音频格式或不同加密标记的样本                | 逐种明确契约和能力边界，不从 MP3 样本推断支持                     |
+| 能力                       | 尚缺什么                                             | 进入实现前的条件                                                   |
+| -------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------ |
+| 账号密码登录与 OTP         | 登录页、挑战、两步验证和 reCAPTCHA 的实际流程        | 主控先组织该流程的专项验证与设计，再补充 auth 的登录结果契约       |
+| 增量同步                   | v4 `last` 的单位、边界、翻页及新增或更新语义         | 主控确认游标不会漏数据后，再提供 sync 与版本化游标                 |
+| 分卷与序列号               | 真实页面、分卷顺序、序列号来源和状态转换             | acquisition 需要真实样本和验收用例后，再扩展计划的交付种类         |
+| 原版下载凭据最小集合与寿命 | 哪些 Cookie 必需、是否与 IP 或其他条件绑定、何时失效 | 首版按最终 URL 作用域计算 Cookie，不声称最小集合；真实验证另行授权 |
+| 其他媒体交付格式           | HLS、不同音频格式或不同加密标记的样本                | 逐种明确契约和能力边界，不从 MP3 样本推断支持                      |
 
 本方案最依赖的前提是网页接口及已观察到的音频交付形态仍可用。接口变化时，网络适配或结构校验应明确失败；保留原始文件事实和隔离的签名适配，使修正局限于相关模块，不能用猜测字段继续返回错误地址。
 
@@ -236,10 +244,12 @@ CORE-01 不定义以下能力的假接口或假数据：
 | 签名缓存   | 到期前后、60 秒刷新阈值与实际有效期分开、30 秒有效的新 Grant 可用、不因阈值循环申请、同作品并发合并、不同作品或会话隔离、单个等待者取消、预取消不启动共享申请                                     |
 | 签名错误   | CDN 403 只刷新重试一次，刷新时的取消、会话切换、认证、限流、网络和响应校验失败保留原分类                                                                                                          |
 | 播放与版本 | 默认不探测音频正文、旧 Track 与新基址或已知新版本不匹配时返回 StaleManifest、等待 Grant 后再次核对最近清单、重新获取清单后使用新 Track、未观察到同基址更新时不声称文件仍存在                      |
-| 下载计划   | CORE-02 计划能力；每跳 Cookie 更新、在最终 Location 停止且不请求文件、URL 文件名解析、直接文件响应及时取消、未知有效期不造值、未知交付方式明确失败                                                |
+| 下载计划   | 每跳 Cookie 更新、在最终 Location 停止且不请求文件、URL 文件名解析、直接文件响应及时取消、未知有效期不造值、未知交付方式明确失败、Play 入口与 www 步骤的认证错误分类、会话替换或取消不返回旧计划  |
 | 凭据       | 在 URL、请求头、响应头及错误正文中埋入假敏感值，确认日志和错误摘要不泄漏；明确导出的快照与下载计划仍属于凭据                                                                                      |
 
-CORE-01 的实际命令：
+下载计划的清理与取消回归：直接 ZIP 或最终 Location 的 body 清理共享事务期限，超时或取消不返回计划且不长期占用 host 队列；401/登录跳转清理期间的调用方取消返回 `Aborted`，不使 Play 失效，`SessionChanged` 仍优先；意外的 206 局部响应返回 `UnexpectedResponse("partial_content")`，不使用局部 `Content-Length`。
+
+core 的实际命令：
 
 ```sh
 pnpm --filter @my-dlsite/core typecheck
@@ -249,7 +259,7 @@ pnpm lint
 pnpm format:check
 ```
 
-测试使用 fake fetch、可控时钟和合成结构，不读取原始 HAR、`LIVE-RESULT` 或用户凭据。构建产物入口已在 Node.js `24.11.1` 上验证；根目录仍不提供聚合 build/test/typecheck 命令。CORE-02 的测试和最低版本验证随该子包实际命令另行确定。
+测试使用 fake fetch、可控时钟和合成结构，不读取原始 HAR、`LIVE-RESULT` 或用户凭据；下载计划测试不请求最终文件。构建产物入口与全部测试已在 Node.js `24.11.0` 上验证；根目录仍不提供聚合 build/test/typecheck 命令。
 
 ## 参考实现的取舍
 

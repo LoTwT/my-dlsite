@@ -11,6 +11,7 @@ import { type Clock, abortPromise, systemClock } from "./internal/clock.js"
 import {
   type AllowedPath,
   assertAllowedUrl,
+  assertSafeHttpsUrl,
   isKnownLoginUrl,
   parseRetryAfter,
 } from "./internal/url.js"
@@ -45,15 +46,64 @@ export interface TransportRequest {
   signal?: AbortSignal
 }
 
+export interface TransportHopRequest {
+  url: URL
+  endpoint: string
+  authContext: "play-session" | "none"
+  credentials: "session" | "none"
+  jar?: CookieJar
+}
+
+export interface TransportHopResponse {
+  type: "response"
+  status: number
+  contentType: string | null
+  contentLength: string | null
+  contentDisposition: string | null
+  contentEncoding: string | null
+}
+
+export type TransportHopResult =
+  | { type: "redirect"; url: URL }
+  | TransportHopResponse
+
+export interface TransportTransaction {
+  requestHop(request: TransportHopRequest): Promise<TransportHopResult>
+}
+
 interface HostGateState {
   tail: Promise<void>
   nextAt: number
 }
 
+type RetryHop = { type: "retry"; retryAfterMs: number; status: number }
+
 type HopResult =
   | { type: "json"; value: unknown }
-  | { type: "redirect"; url: URL }
-  | { type: "retry"; retryAfterMs: number; status: number }
+  | TransportHopResult
+  | RetryHop
+
+type MetadataHopResult = TransportHopResult | RetryHop
+
+type SendHopInput = {
+  url: URL
+  method: "GET" | "POST"
+  body: TransportRequest["body"]
+  headers: Record<string, string>
+  endpoint: string
+  authContext: "play-session" | "none"
+  credentials: "session" | "none"
+  jar: CookieJar | undefined
+  transaction: Transaction
+  now: number
+} & (
+  | {
+      responseMode: "json"
+      allowedHosts: readonly string[]
+      allowedPath: AllowedPath
+    }
+  | { responseMode: "metadata" }
+)
 
 class Transaction {
   readonly signal: AbortSignal
@@ -96,6 +146,18 @@ class Transaction {
     } catch {
       throw this.abortError()
     }
+    if (this.signal.aborted) throw this.abortError()
+  }
+
+  async cancelBody(response: Response): Promise<void> {
+    // Body cleanup shares the transaction deadline. A stuck cancel must not
+    // outlive the transaction or keep the host gate occupied.
+    const cancellation = cancelResponseBody(response)
+    if (this.signal.aborted) {
+      void cancellation
+      throw this.abortError()
+    }
+    await Promise.race([cancellation, abortPromise(this.signal)])
     if (this.signal.aborted) throw this.abortError()
   }
 }
@@ -194,6 +256,7 @@ export class Transport {
         async () => {
           const headers = await this.headersFor(request, currentUrl)
           return this.sendHop({
+            responseMode: "json",
             url: currentUrl,
             method: request.method,
             body: request.body,
@@ -235,8 +298,88 @@ export class Transport {
         continue
       }
 
+      if (hop.type !== "json") {
+        throw new UnexpectedResponse(request.endpoint, "unexpected_response")
+      }
+      if (transaction.signal.aborted) throw transaction.abortError()
       return hop.value
     }
+  }
+
+  createTransaction(signal?: AbortSignal): TransportTransaction {
+    const transaction = new Transaction(
+      signal,
+      this.clock,
+      this.transactionTimeoutMs,
+    )
+    let retries = 0
+    return {
+      requestHop: async (request) => {
+        assertSafeHttpsUrl(request.url, request.endpoint)
+        for (;;) {
+          const hop = await this.sendMetadataHop(request, transaction)
+          if (transaction.signal.aborted) throw transaction.abortError()
+          if (hop.type !== "retry") return hop
+          if (retries >= 1) {
+            if (hop.status === 429) throw new RateLimited(hop.retryAfterMs)
+            throw new HttpError(hop.status, request.endpoint)
+          }
+          if (hop.retryAfterMs > transaction.remaining()) {
+            if (hop.status === 429) throw new RateLimited(hop.retryAfterMs)
+            throw new HttpError(hop.status, request.endpoint)
+          }
+          retries += 1
+          await transaction.sleep(hop.retryAfterMs)
+        }
+      },
+    }
+  }
+
+  private async sendMetadataHop(
+    request: TransportHopRequest,
+    transaction: Transaction,
+  ): Promise<MetadataHopResult> {
+    const hop = await this.hostGate.run(
+      request.url.hostname.toLowerCase(),
+      async () => {
+        const headers = await this.headersForHop(request, request.url)
+        return this.sendHop({
+          responseMode: "metadata",
+          url: request.url,
+          method: "GET",
+          body: undefined,
+          headers,
+          endpoint: request.endpoint,
+          authContext: request.authContext,
+          credentials: request.credentials,
+          jar: request.jar,
+          transaction,
+          now: this.clock.now(),
+        })
+      },
+      transaction.signal,
+      () => transaction.abortError(),
+    )
+    if (hop.type === "json") {
+      throw new UnexpectedResponse(request.endpoint, "unexpected_json")
+    }
+    return hop
+  }
+
+  private async headersForHop(
+    request: TransportHopRequest,
+    url: URL,
+  ): Promise<Record<string, string>> {
+    const cookie =
+      request.credentials === "session" && request.jar !== undefined
+        ? await request.jar.getCookieString(url)
+        : ""
+    const headers: Record<string, string> = {
+      "Accept": "*/*",
+      "User-Agent": this.userAgent,
+    }
+    if (cookie.length > 0) headers.Cookie = cookie
+    return headers
   }
 
   private async headersFor(
@@ -262,20 +405,7 @@ export class Transport {
     return headers
   }
 
-  private async sendHop(input: {
-    url: URL
-    method: "GET" | "POST"
-    body: TransportRequest["body"]
-    headers: Record<string, string>
-    endpoint: string
-    allowedHosts: readonly string[]
-    allowedPath: AllowedPath
-    authContext: "play-session" | "none"
-    credentials: "session" | "none"
-    jar: CookieJar | undefined
-    transaction: Transaction
-    now: number
-  }): Promise<HopResult> {
+  private async sendHop(input: SendHopInput): Promise<HopResult> {
     let response: Response
     try {
       response = await this.fetchImpl(input.url, {
@@ -291,14 +421,14 @@ export class Transport {
     }
 
     if (response.redirected) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       throw new UnexpectedResponse(input.endpoint, "unexpected_redirect_follow")
     }
 
     const status = response.status
     if (status >= 300 && status < 400) {
       const location = response.headers.get("location")
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       if (location === null) {
         throw new UnexpectedResponse(
           input.endpoint,
@@ -311,31 +441,35 @@ export class Transport {
       } catch {
         throw new UnexpectedResponse(input.endpoint, "invalid_redirect_target")
       }
-      if (input.authContext === "play-session" && isKnownLoginUrl(target)) {
-        throw new AuthRequired(input.endpoint)
-      }
-      assertAllowedUrl(
-        target,
-        input.allowedHosts,
-        input.allowedPath,
-        input.endpoint,
-      )
-      if (input.method !== "GET") {
-        throw new UnexpectedResponse(input.endpoint, "post_redirect")
+      if (input.responseMode === "json") {
+        if (input.authContext === "play-session" && isKnownLoginUrl(target)) {
+          throw new AuthRequired(input.endpoint)
+        }
+        assertAllowedUrl(
+          target,
+          input.allowedHosts,
+          input.allowedPath,
+          input.endpoint,
+        )
+        if (input.method !== "GET") {
+          throw new UnexpectedResponse(input.endpoint, "post_redirect")
+        }
+      } else {
+        assertSafeHttpsUrl(target, input.endpoint)
       }
       await this.storeCookies(input, response)
       return { type: "redirect", url: target }
     }
 
     if (status === 401) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       if (input.authContext === "play-session") {
         throw new AuthRequired(input.endpoint)
       }
       throw new HttpError(status, input.endpoint)
     }
     if (status === 403) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       throw new HttpError(403, input.endpoint)
     }
     if (status === 429 || status === 503) {
@@ -344,20 +478,33 @@ export class Transport {
         response.headers.get("retry-after"),
         input.now,
       )
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       return { type: "retry", retryAfterMs, status }
     }
     if (status < 200 || status >= 300) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       throw new HttpError(status, input.endpoint)
     }
 
     await this.storeCookies(input, response)
+    if (input.responseMode === "metadata") {
+      const result: TransportHopResponse = {
+        type: "response",
+        status,
+        contentType: response.headers.get("content-type"),
+        contentLength: response.headers.get("content-length"),
+        contentDisposition: response.headers.get("content-disposition"),
+        contentEncoding: response.headers.get("content-encoding"),
+      }
+      await input.transaction.cancelBody(response)
+      return result
+    }
+
     const contentType = (
       response.headers.get("content-type") ?? ""
     ).toLowerCase()
     if (contentType.length > 0 && !contentType.includes("json")) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       throw new UnexpectedResponse(input.endpoint, "unexpected_content_type")
     }
 
@@ -433,7 +580,7 @@ export class Transport {
   }
 }
 
-async function cancelBody(response: Response): Promise<void> {
+async function cancelResponseBody(response: Response): Promise<void> {
   try {
     await response.body?.cancel()
   } catch {

@@ -9,7 +9,7 @@
 ## 当前状态与边界
 
 - `packages/core` 已存在，包名 `@my-dlsite/core`，私有、不发布；CORE-01 已实现会话恢复、作品库、文件清单和播放地址。
-- `acquisition`（单 ZIP 下载计划）属于 CORE-02，尚未实现；CORE-01 不暴露假方法、占位模块或下载计划类型。
+- CORE-02 已实现已观察的单 ZIP 原版下载计划：`client.acquisition.plan(workId, { signal? })` 返回 `AcquisitionPlan`。它只生成下载地址和按最终 URL 作用域计算的请求头，不下载、不写文件、不解压，也不支持分卷、序列号或其他交付方式。
 - 根包 `my-dlsite-monorepo` 仍为私有包，不发布；不维护 `exports`、`files`、`imports` 或发布产物，也没有根级 `src/`、`tests/`。
 - 根目录不承载播放器、下载或其他业务源码；后续子包继续放在 `packages/*`。
 
@@ -35,7 +35,7 @@
 - `pnpm-workspace.yaml` 的 `packages: packages/*` 定义发现范围；新增或移除子包目录不需要修改根配置。
 - 根目录只保留当前实际使用的命令；构建、测试等聚合命令在有实际需求时再添加。
 - 子包自带 `package.json`，按需定义构建、测试和类型检查的工具、配置与脚本，根目录不假设子包存在 `src/` 或 `tests/`。
-- `@my-dlsite/core` 使用 ESM、TypeScript 严格模式和 `noUncheckedIndexedAccess`；运行时 `engines.node` 为 `>=24.11`，已在 Node.js `24.11.1` 上验证构建产物入口。根目录的开发环境 Node 26 不抬高该下限。
+- `@my-dlsite/core` 使用 ESM、TypeScript 严格模式和 `noUncheckedIndexedAccess`；运行时 `engines.node` 为 `>=24.11`，已在 Node.js `24.11.0` 上验证构建产物入口与测试（CORE-01 基线另在 `24.11.1` 上验证过）。根目录的开发环境 Node 26 不抬高该下限。
 - core 的运行时依赖为 `tough-cookie` 与 `valibot`；开发依赖 `typescript`、`vitest`、`@types/node` 放在子包。根目录不提供 TypeScript 编译器、Node 类型依赖或共享 TS 配置。
 - 根级 `lint` 与 `format` 面向整个工作区，子包不重复配置 Oxc。确需包级覆盖时，使用 Oxc 的 `overrides` 并在子包文档中说明。
 - 根包不发布。子包是否发布由各自 `package.json` 决定，不沿用根包的名称、仓库链接或版本策略；core 当前为私有包。
@@ -45,7 +45,7 @@
 - `.gitignore` 保留 HAR 忽略规则（`*.har`、`har-report*.txt`）。原始 HAR 含 Cookie、签名凭据，不提交，也不供检查或构建读取；常规测试不运行真实 DLsite 请求。
 - pre-commit 钩子对整个工作区运行 `pnpm lint` 与 `pnpm format:check`，不修改文件。修改 `simple-git-hooks` 配置后，运行 `pnpm run prepare` 更新已安装的钩子。检查失败时修复后重新提交，不跳过钩子。
 - 修改根配置或文档时，至少运行 `pnpm lint` 与 `pnpm format:check`。
-- core 源码改动运行 `pnpm --filter @my-dlsite/core check`（typecheck、test、build），并运行根 `pnpm lint`、`pnpm format:check`。测试使用 fake fetch、可控时钟和合成/充分脱敏结构，不读取 `LIVE-RESULT` 或用户凭据。
+- core 源码改动运行 `pnpm --filter @my-dlsite/core check`（typecheck、test、build），并运行根 `pnpm lint`、`pnpm format:check`。测试使用 fake fetch、可控时钟和合成/充分脱敏结构，不读取 `LIVE-RESULT` 或用户凭据；下载计划测试不得请求最终文件 URL。
 - 真实服务验证需另行明确授权与范围；离线测试不能证明线上协议仍可用。
 
 ## 编码约定
