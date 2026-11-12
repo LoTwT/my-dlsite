@@ -208,6 +208,7 @@ export class Auth implements AuthApi {
       endpoint: "auth.validate",
       allowedHosts: [PLAY_HOST],
       allowedPath: exactPath(SALES_URL.pathname),
+      authContext: "play-session",
       credentials: "session",
       jar,
       ...(signal === undefined ? {} : { signal }),

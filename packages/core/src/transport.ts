@@ -35,6 +35,7 @@ export interface TransportRequest {
   endpoint: string
   allowedHosts: readonly string[]
   allowedPath: AllowedPath
+  authContext: "play-session" | "none"
   credentials: "session" | "none"
   jar?: CookieJar
   body?: {
@@ -200,6 +201,7 @@ export class Transport {
             endpoint: request.endpoint,
             allowedHosts: request.allowedHosts,
             allowedPath: request.allowedPath,
+            authContext: request.authContext,
             credentials: request.credentials,
             jar: request.jar,
             transaction,
@@ -268,6 +270,7 @@ export class Transport {
     endpoint: string
     allowedHosts: readonly string[]
     allowedPath: AllowedPath
+    authContext: "play-session" | "none"
     credentials: "session" | "none"
     jar: CookieJar | undefined
     transaction: Transaction
@@ -308,7 +311,7 @@ export class Transport {
       } catch {
         throw new UnexpectedResponse(input.endpoint, "invalid_redirect_target")
       }
-      if (isKnownLoginUrl(target)) {
+      if (input.authContext === "play-session" && isKnownLoginUrl(target)) {
         throw new AuthRequired(input.endpoint)
       }
       assertAllowedUrl(
@@ -326,7 +329,10 @@ export class Transport {
 
     if (status === 401) {
       await cancelBody(response)
-      throw new AuthRequired(input.endpoint)
+      if (input.authContext === "play-session") {
+        throw new AuthRequired(input.endpoint)
+      }
+      throw new HttpError(status, input.endpoint)
     }
     if (status === 403) {
       await cancelBody(response)

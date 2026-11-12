@@ -172,6 +172,7 @@ export interface PlayfileEntry {
   type: string
   length: number | null
   size: string | null
+  media?: Readonly<Record<string, unknown>>
   audioOptimized: AudioOptimized | null
   textOptimized: TextOptimized | null
   imageOptimized: ImageOptimized | null

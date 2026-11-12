@@ -190,12 +190,23 @@ function parsePlayfile(
     type,
     length: readNumber(value["length"]),
     size: readString(value["size"]),
+    media: readMedia(value),
     audioOptimized: parseAudioOptimized(value["audio"], diagnostics),
     textOptimized: parseTextOptimized(value["text"]),
     imageOptimized: parseImageOptimized(value["image"]),
     pdfPageCount: parsePdfPageCount(value["pdf"]),
     extra,
   }
+}
+
+function readMedia(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const media: Record<string, unknown> = {}
+  for (const key of ["text", "audio", "image", "pdf"] as const) {
+    if (key in value) media[key] = value[key]
+  }
+  return media
 }
 
 function parseAudioOptimized(

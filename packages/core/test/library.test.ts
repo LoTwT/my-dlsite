@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { Auth } from "../src/auth.js"
 import {
   Aborted,
+  AuthRequired,
   HttpError,
   IncompleteLibrary,
   SessionChanged,
@@ -328,6 +329,22 @@ describe("library", () => {
     await expect(harness.library.list()).rejects.toBeInstanceOf(
       IncompleteLibrary,
     )
+  })
+
+  it("invalidates the Play session on a real Play 401 and stops later requests", async () => {
+    let countCalls = 0
+    const harness = await withSession((url) => {
+      if (url.pathname === "/api/v4/content/sales")
+        return jsonResponse(salesResponse([]))
+      if (url.pathname === "/api/v4/content/count") {
+        countCalls += 1
+        return new Response("", { status: 401 })
+      }
+      return new Response("", { status: 404 })
+    })
+    await expect(harness.library.list()).rejects.toBeInstanceOf(AuthRequired)
+    await expect(harness.library.list()).rejects.toBeInstanceOf(AuthRequired)
+    expect(countCalls).toBe(1)
   })
 
   it("fails on overall structure errors", async () => {

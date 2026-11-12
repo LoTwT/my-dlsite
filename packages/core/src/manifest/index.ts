@@ -63,6 +63,7 @@ export class Manifest implements ManifestApi {
             endpoint: "manifest.get",
             allowedHosts: [CDN_HOST],
             allowedPath,
+            authContext: "none",
             credentials: "none",
             ...(signal === undefined ? {} : { signal }),
           })

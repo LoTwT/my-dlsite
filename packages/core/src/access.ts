@@ -129,6 +129,7 @@ export class Access {
       endpoint: "access.sign",
       allowedHosts: [PLAY_HOST],
       allowedPath: exactPath(SIGN_URL.pathname),
+      authContext: "play-session",
       credentials: "session",
       jar: context.jar,
       signal: context.signal,

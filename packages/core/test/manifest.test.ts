@@ -105,6 +105,68 @@ describe("manifest", () => {
     expect(codes).toContain("unknown_playfile_type")
   })
 
+  it("preserves raw nested media facts without losing typed derivations", async () => {
+    const fixture = manifestFixture(workId)
+    const audio = fixture.playfile["audio-01.flac"] as {
+      audio: {
+        delivery_note: string
+        optimized: { codec: string }
+      }
+    }
+    audio.audio.delivery_note = "audio-note"
+    audio.audio.optimized.codec = "codec-note"
+    const text = fixture.playfile["text-01.txt"] as {
+      text: { delivery_note: string }
+    }
+    text.text.delivery_note = "text-note"
+    const image = fixture.playfile["image-01.png"] as {
+      image: { files: { source_note: string } }
+    }
+    image.image.files.source_note = "image-note"
+    fixture.playfile["pdf-01.pdf"] = {
+      type: "pdf",
+      pdf: {
+        page: [{ index: 1 }, { index: 2 }],
+        delivery_note: "pdf-note",
+      },
+    }
+    fixture.playfile["video-01.mp4"] = {
+      type: "video",
+      video: { delivery_note: "video-note" },
+    }
+
+    const harness = await manifestHarness({ manifest: fixture })
+    const manifest = await harness.client.manifest.get(workId)
+    const playfiles = manifest.playfiles
+
+    expect(playfiles["audio-01.flac"]?.media?.["audio"]).toMatchObject({
+      delivery_note: "audio-note",
+      optimized: { codec: "codec-note" },
+    })
+    expect(playfiles["text-01.txt"]?.media?.["text"]).toMatchObject({
+      delivery_note: "text-note",
+    })
+    expect(playfiles["image-01.png"]?.media?.["image"]).toMatchObject({
+      files: {
+        name: "image-01.png",
+        source_note: "image-note",
+      },
+    })
+    expect(playfiles["pdf-01.pdf"]).toMatchObject({
+      pdfPageCount: 2,
+      media: {
+        pdf: {
+          delivery_note: "pdf-note",
+        },
+      },
+    })
+    expect(playfiles["video-01.mp4"]?.extra["video"]).toMatchObject({
+      delivery_note: "video-note",
+    })
+    expect(playfiles["audio-01.flac"]?.audioOptimized?.encrypted).toBe(false)
+    expect(playfiles["image-01.png"]?.imageOptimized?.encrypted).toBe(true)
+  })
+
   it("preserves unknown top-level manifest fields", async () => {
     const fixture = manifestFixture(workId) as ReturnType<
       typeof manifestFixture
@@ -113,6 +175,53 @@ describe("manifest", () => {
     const harness = await manifestHarness({ manifest: fixture })
     const manifest = await harness.client.manifest.get(workId)
     expect(manifest.extra["top_level_extra"]).toBe("kept")
+  })
+
+  it("keeps the Play session valid after a CDN 401 and allows later Play requests", async () => {
+    let countCalls = 0
+    let salesCalls = 0
+    let signCalls = 0
+    let ziptreeCalls = 0
+    const harness = createHarness((url) => {
+      if (url.pathname === "/api/v4/content/sales") {
+        salesCalls += 1
+        return jsonResponse(salesResponse([]))
+      }
+      if (url.pathname === "/api/v4/content/count") {
+        countCalls += 1
+        return jsonResponse({
+          user: 0,
+          production: 0,
+          page_limit: 1,
+          concurrency: 1,
+        })
+      }
+      if (url.pathname === "/api/v4/download/sign/url") {
+        signCalls += 1
+        return jsonResponse(signResponse(workId, 2_000_000_000))
+      }
+      if (url.pathname.endsWith("/ziptree.json")) {
+        ziptreeCalls += 1
+        return new Response("", { status: 401 })
+      }
+      return new Response("", { status: 404 })
+    })
+    await harness.client.auth.importCookies([playSessionCookie()])
+    countCalls = 0
+    salesCalls = 0
+    signCalls = 0
+    ziptreeCalls = 0
+
+    await expect(harness.client.manifest.get(workId)).rejects.toMatchObject({
+      code: "HttpError",
+      status: 401,
+    })
+    const library = await harness.client.library.list()
+    expect(library.works).toHaveLength(0)
+    expect(signCalls).toBe(1)
+    expect(ziptreeCalls).toBe(1)
+    expect(countCalls).toBe(1)
+    expect(salesCalls).toBe(1)
   })
 
   it("requests ziptree with signature parameters only and no login cookies", async () => {

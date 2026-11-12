@@ -49,6 +49,7 @@ export class Library implements LibraryApi {
         endpoint: "library.count",
         allowedHosts: [PLAY_HOST],
         allowedPath: exactPath(COUNT_URL.pathname),
+        authContext: "play-session",
         credentials: "session",
         jar: context.jar,
         ...(signal === undefined ? {} : { signal }),
@@ -71,6 +72,7 @@ export class Library implements LibraryApi {
         endpoint: "library.sales",
         allowedHosts: [PLAY_HOST],
         allowedPath: exactPath(SALES_URL.pathname),
+        authContext: "play-session",
         credentials: "session",
         jar: context.jar,
         ...(signal === undefined ? {} : { signal }),
@@ -121,6 +123,7 @@ export class Library implements LibraryApi {
           endpoint: "library.works",
           allowedHosts: [PLAY_HOST],
           allowedPath: exactPath(WORKS_URL.pathname),
+          authContext: "play-session",
           credentials: "session",
           jar: context.jar,
           body: {

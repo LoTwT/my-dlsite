@@ -50,6 +50,7 @@ describe("transport", () => {
       allowedHosts: ["play.dlsite.com"],
       allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "session",
+      authContext: "play-session",
       jar,
     })
 
@@ -80,6 +81,7 @@ describe("transport", () => {
       allowedHosts: ["play.dl.dlsite.com"],
       allowedPath: pathPrefix("/content/work/doujin/RJ00000000/RJ123456/"),
       credentials: "none",
+      authContext: "none",
       jar,
     })
 
@@ -112,6 +114,7 @@ describe("transport", () => {
       allowedHosts: ["play.dlsite.com"],
       allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "session",
+      authContext: "play-session",
       jar,
     })
 
@@ -151,6 +154,7 @@ describe("transport", () => {
       allowedHosts: ["play.dlsite.com"],
       allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "none",
+      authContext: "none",
     })
     await firstStarted
 
@@ -162,6 +166,7 @@ describe("transport", () => {
       allowedHosts: ["play.dlsite.com"],
       allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "none",
+      authContext: "none",
       signal: controller.signal,
     })
     const third = transport.requestJson({
@@ -171,6 +176,7 @@ describe("transport", () => {
       allowedHosts: ["play.dlsite.com"],
       allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "none",
+      authContext: "none",
     })
     controller.abort()
     await expect(second).rejects.toBeInstanceOf(Aborted)
@@ -206,6 +212,7 @@ describe("transport", () => {
       allowedHosts: ["play.dlsite.com"],
       allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "session",
+      authContext: "play-session",
       jar,
     })
     await firstStarted
@@ -216,6 +223,7 @@ describe("transport", () => {
       allowedHosts: ["play.dlsite.com"],
       allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "session",
+      authContext: "play-session",
       jar,
     })
     resolveFirst?.(
@@ -253,6 +261,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
       }),
     ).rejects.toMatchObject({
       code: "UnexpectedResponse",
@@ -276,6 +285,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
       }),
     ).rejects.toMatchObject({
       code: "UnexpectedResponse",
@@ -301,10 +311,71 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "session",
+        authContext: "play-session",
         jar: await sessionJar(),
       }),
     ).rejects.toBeInstanceOf(AuthRequired)
     expect(login.calls).toHaveLength(1)
+  })
+
+  it("classifies 401 and login redirects only in Play-session context", async () => {
+    const unauthorized = createFakeServer(
+      () => new Response("", { status: 401 }),
+    )
+    const playAuth = createTransport(unauthorized, createClock())
+    await expect(
+      playAuth.requestJson({
+        method: "GET",
+        url: salesUrl,
+        endpoint: "test",
+        allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
+        credentials: "session",
+        authContext: "play-session",
+        jar: await sessionJar(),
+      }),
+    ).rejects.toBeInstanceOf(AuthRequired)
+
+    const anonymousAuth = createTransport(
+      createFakeServer(() => new Response("", { status: 401 })),
+      createClock(),
+    )
+    await expect(
+      anonymousAuth.requestJson({
+        method: "GET",
+        url: salesUrl,
+        endpoint: "test",
+        allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
+        credentials: "none",
+        authContext: "none",
+      }),
+    ).rejects.toMatchObject({ code: "HttpError", status: 401 })
+
+    const login = createFakeServer(
+      () =>
+        new Response("", {
+          status: 302,
+          headers: {
+            Location: "https://www.dlsite.com/home/login/=/skip_register/1",
+          },
+        }),
+    )
+    const anonymousLogin = createTransport(login, createClock())
+    await expect(
+      anonymousLogin.requestJson({
+        method: "GET",
+        url: salesUrl,
+        endpoint: "test",
+        allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
+        credentials: "none",
+        authContext: "none",
+      }),
+    ).rejects.toMatchObject({
+      code: "UnexpectedResponse",
+      diagnostic: "unexpected_target",
+    })
   })
 
   it("rejects POST redirects instead of replaying the body", async () => {
@@ -324,6 +395,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/works"),
         credentials: "none",
+        authContext: "none",
         body: { contentType: "application/json", text: "{}" },
       }),
     ).rejects.toMatchObject({
@@ -353,6 +425,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
       }),
     ).resolves.toEqual({ ok: true })
     expect(server.calls).toHaveLength(2)
@@ -370,6 +443,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/works"),
         credentials: "none",
+        authContext: "none",
         body: { contentType: "application/json", text: "{}" },
       }),
     ).rejects.toBeInstanceOf(RateLimited)
@@ -385,6 +459,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
       }),
     ).rejects.toBeInstanceOf(RateLimited)
     expect(get.calls).toHaveLength(2)
@@ -401,6 +476,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
       }),
     ).rejects.toBeInstanceOf(HttpError)
     expect(server.calls).toHaveLength(2)
@@ -433,6 +509,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
       }),
     ).rejects.toMatchObject({ code: "TransportError", reason: "timeout" })
 
@@ -450,6 +527,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
         signal: controller.signal,
       }),
     ).rejects.toBeInstanceOf(Aborted)
@@ -475,6 +553,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
       }),
     ).rejects.toBeInstanceOf(HttpError)
     expect(canceled).toBe(true)
@@ -497,6 +576,7 @@ describe("transport", () => {
         allowedHosts: ["play.dlsite.com"],
         allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
+        authContext: "none",
       })
       .catch((caught: unknown) => caught)
     expect(error).toMatchObject({
