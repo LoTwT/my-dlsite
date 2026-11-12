@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { Auth } from "../src/auth.js"
 import {
   Aborted,
+  HttpError,
   IncompleteLibrary,
   SessionChanged,
   UnexpectedResponse,
@@ -149,6 +150,59 @@ describe("library", () => {
     expect(countCall?.url.search).toBe("")
     expect(salesCall?.url.search).toBe("")
     expect(snapshot.works.map((work) => work.metadata.workId)).toEqual(ids)
+  })
+
+  it("merges metadata by work id regardless of works response order", async () => {
+    const ids = ["RJ10000001", "RJ10000002"]
+    const harness = await withSession((url, init) => {
+      if (url.pathname === "/api/v4/content/sales")
+        return jsonResponse(salesResponse(ids))
+      if (url.pathname === "/api/v4/content/count") {
+        return jsonResponse({
+          user: 2,
+          production: 0,
+          page_limit: 1,
+          concurrency: 1,
+        })
+      }
+      const worknos = readWorknos(init)
+      return jsonResponse(
+        worksResponse(
+          [...worknos].reverse().map((workno) => workResponse(workno)),
+        ),
+      )
+    })
+    const snapshot = await harness.library.list()
+    expect(snapshot.works.map((work) => work.metadata.workId)).toEqual(ids)
+    expect(snapshot.works.map((work) => work.metadata.name)).toEqual([
+      "作品 RJ10000001",
+      "作品 RJ10000002",
+    ])
+  })
+
+  it("fails the whole list when a later works batch fails", async () => {
+    const ids = workIds(20)
+    let worksCalls = 0
+    const harness = await withSession((url, init) => {
+      if (url.pathname === "/api/v4/content/sales")
+        return jsonResponse(salesResponse(ids))
+      if (url.pathname === "/api/v4/content/count") {
+        return jsonResponse({
+          user: 20,
+          production: 0,
+          page_limit: 1,
+          concurrency: 1,
+        })
+      }
+      worksCalls += 1
+      if (worksCalls === 2) return new Response("", { status: 500 })
+      const worknos = readWorknos(init)
+      return jsonResponse(
+        worksResponse(worknos.map((workno) => workResponse(workno))),
+      )
+    })
+    await expect(harness.library.list()).rejects.toBeInstanceOf(HttpError)
+    expect(worksCalls).toBe(2)
   })
 
   it("defaults to SOU, keeps known other types separate, and honors empty filters", async () => {
