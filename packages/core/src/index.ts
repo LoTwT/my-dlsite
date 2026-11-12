@@ -18,6 +18,8 @@ export {
 } from "./errors.js"
 
 export type {
+  AcquisitionApi,
+  AcquisitionPlan,
   AudioOptimized,
   AuthApi,
   ClientConfig,

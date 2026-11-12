@@ -13,6 +13,18 @@ export function pathPrefix(path: string): AllowedPath {
   return { path, match: "prefix" }
 }
 
+export function assertSafeHttpsUrl(url: URL, endpoint: string): void {
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.port !== "" ||
+    url.hash !== ""
+  ) {
+    throw new UnexpectedResponse(endpoint, "unexpected_target")
+  }
+}
+
 export function assertAllowedUrl(
   url: URL,
   allowedHosts: readonly string[],

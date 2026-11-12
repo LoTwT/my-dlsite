@@ -11,6 +11,7 @@ import { type Clock, abortPromise, systemClock } from "./internal/clock.js"
 import {
   type AllowedPath,
   assertAllowedUrl,
+  assertSafeHttpsUrl,
   isKnownLoginUrl,
   parseRetryAfter,
 } from "./internal/url.js"
@@ -45,15 +46,63 @@ export interface TransportRequest {
   signal?: AbortSignal
 }
 
+export interface TransportHopRequest {
+  url: URL
+  endpoint: string
+  authContext: "play-session" | "none"
+  credentials: "session" | "none"
+  jar?: CookieJar
+}
+
+export interface TransportHopResponse {
+  type: "response"
+  contentType: string | null
+  contentLength: string | null
+  contentDisposition: string | null
+  contentEncoding: string | null
+}
+
+export type TransportHopResult =
+  | { type: "redirect"; url: URL }
+  | TransportHopResponse
+
+export interface TransportTransaction {
+  requestHop(request: TransportHopRequest): Promise<TransportHopResult>
+}
+
 interface HostGateState {
   tail: Promise<void>
   nextAt: number
 }
 
+type RetryHop = { type: "retry"; retryAfterMs: number; status: number }
+
 type HopResult =
   | { type: "json"; value: unknown }
-  | { type: "redirect"; url: URL }
-  | { type: "retry"; retryAfterMs: number; status: number }
+  | TransportHopResult
+  | RetryHop
+
+type MetadataHopResult = TransportHopResult | RetryHop
+
+type SendHopInput = {
+  url: URL
+  method: "GET" | "POST"
+  body: TransportRequest["body"]
+  headers: Record<string, string>
+  endpoint: string
+  authContext: "play-session" | "none"
+  credentials: "session" | "none"
+  jar: CookieJar | undefined
+  transaction: Transaction
+  now: number
+} & (
+  | {
+      responseMode: "json"
+      allowedHosts: readonly string[]
+      allowedPath: AllowedPath
+    }
+  | { responseMode: "metadata" }
+)
 
 class Transaction {
   readonly signal: AbortSignal
@@ -194,6 +243,7 @@ export class Transport {
         async () => {
           const headers = await this.headersFor(request, currentUrl)
           return this.sendHop({
+            responseMode: "json",
             url: currentUrl,
             method: request.method,
             body: request.body,
@@ -235,8 +285,86 @@ export class Transport {
         continue
       }
 
+      if (hop.type !== "json") {
+        throw new UnexpectedResponse(request.endpoint, "unexpected_response")
+      }
       return hop.value
     }
+  }
+
+  createTransaction(signal?: AbortSignal): TransportTransaction {
+    const transaction = new Transaction(
+      signal,
+      this.clock,
+      this.transactionTimeoutMs,
+    )
+    let retries = 0
+    return {
+      requestHop: async (request) => {
+        assertSafeHttpsUrl(request.url, request.endpoint)
+        for (;;) {
+          const hop = await this.sendMetadataHop(request, transaction)
+          if (hop.type !== "retry") return hop
+          if (retries >= 1) {
+            if (hop.status === 429) throw new RateLimited(hop.retryAfterMs)
+            throw new HttpError(hop.status, request.endpoint)
+          }
+          if (hop.retryAfterMs > transaction.remaining()) {
+            if (hop.status === 429) throw new RateLimited(hop.retryAfterMs)
+            throw new HttpError(hop.status, request.endpoint)
+          }
+          retries += 1
+          await transaction.sleep(hop.retryAfterMs)
+        }
+      },
+    }
+  }
+
+  private async sendMetadataHop(
+    request: TransportHopRequest,
+    transaction: Transaction,
+  ): Promise<MetadataHopResult> {
+    const hop = await this.hostGate.run(
+      request.url.hostname.toLowerCase(),
+      async () => {
+        const headers = await this.headersForHop(request, request.url)
+        return this.sendHop({
+          responseMode: "metadata",
+          url: request.url,
+          method: "GET",
+          body: undefined,
+          headers,
+          endpoint: request.endpoint,
+          authContext: request.authContext,
+          credentials: request.credentials,
+          jar: request.jar,
+          transaction,
+          now: this.clock.now(),
+        })
+      },
+      transaction.signal,
+      () => transaction.abortError(),
+    )
+    if (hop.type === "json") {
+      throw new UnexpectedResponse(request.endpoint, "unexpected_json")
+    }
+    return hop
+  }
+
+  private async headersForHop(
+    request: TransportHopRequest,
+    url: URL,
+  ): Promise<Record<string, string>> {
+    const cookie =
+      request.credentials === "session" && request.jar !== undefined
+        ? await request.jar.getCookieString(url)
+        : ""
+    const headers: Record<string, string> = {
+      "Accept": "*/*",
+      "User-Agent": this.userAgent,
+    }
+    if (cookie.length > 0) headers.Cookie = cookie
+    return headers
   }
 
   private async headersFor(
@@ -262,20 +390,7 @@ export class Transport {
     return headers
   }
 
-  private async sendHop(input: {
-    url: URL
-    method: "GET" | "POST"
-    body: TransportRequest["body"]
-    headers: Record<string, string>
-    endpoint: string
-    allowedHosts: readonly string[]
-    allowedPath: AllowedPath
-    authContext: "play-session" | "none"
-    credentials: "session" | "none"
-    jar: CookieJar | undefined
-    transaction: Transaction
-    now: number
-  }): Promise<HopResult> {
+  private async sendHop(input: SendHopInput): Promise<HopResult> {
     let response: Response
     try {
       response = await this.fetchImpl(input.url, {
@@ -311,17 +426,21 @@ export class Transport {
       } catch {
         throw new UnexpectedResponse(input.endpoint, "invalid_redirect_target")
       }
-      if (input.authContext === "play-session" && isKnownLoginUrl(target)) {
-        throw new AuthRequired(input.endpoint)
-      }
-      assertAllowedUrl(
-        target,
-        input.allowedHosts,
-        input.allowedPath,
-        input.endpoint,
-      )
-      if (input.method !== "GET") {
-        throw new UnexpectedResponse(input.endpoint, "post_redirect")
+      if (input.responseMode === "json") {
+        if (input.authContext === "play-session" && isKnownLoginUrl(target)) {
+          throw new AuthRequired(input.endpoint)
+        }
+        assertAllowedUrl(
+          target,
+          input.allowedHosts,
+          input.allowedPath,
+          input.endpoint,
+        )
+        if (input.method !== "GET") {
+          throw new UnexpectedResponse(input.endpoint, "post_redirect")
+        }
+      } else {
+        assertSafeHttpsUrl(target, input.endpoint)
       }
       await this.storeCookies(input, response)
       return { type: "redirect", url: target }
@@ -353,6 +472,18 @@ export class Transport {
     }
 
     await this.storeCookies(input, response)
+    if (input.responseMode === "metadata") {
+      const result: TransportHopResponse = {
+        type: "response",
+        contentType: response.headers.get("content-type"),
+        contentLength: response.headers.get("content-length"),
+        contentDisposition: response.headers.get("content-disposition"),
+        contentEncoding: response.headers.get("content-encoding"),
+      }
+      await cancelBody(response)
+      return result
+    }
+
     const contentType = (
       response.headers.get("content-type") ?? ""
     ).toLowerCase()

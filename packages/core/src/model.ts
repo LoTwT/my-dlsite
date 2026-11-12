@@ -226,6 +226,20 @@ export interface MediaSource {
   sizeBytes?: number
 }
 
+/**
+ * A short-lived, credential-bearing plan for one original delivery.
+ * `headers` is computed for `url` only; do not reuse it for another target or
+ * log the plan. The URL may be single-use, so download it immediately.
+ */
+export interface AcquisitionPlan {
+  url: string
+  filename: string
+  headers: Readonly<Record<string, string>>
+  mimeType?: string
+  sizeBytes?: number
+  expiresAt?: string
+}
+
 export interface AuthApi {
   importCookies(
     cookies: readonly ScopedCookie[],
@@ -248,8 +262,16 @@ export interface PlaybackApi {
   resolve(track: Track, options?: PlaybackOptions): Promise<MediaSource>
 }
 
+export interface AcquisitionApi {
+  /**
+   * Resolves the observed single-ZIP original delivery without downloading it.
+   */
+  plan(workId: WorkId, options?: OperationOptions): Promise<AcquisitionPlan>
+}
+
 export interface DlsiteClient {
   readonly auth: AuthApi
+  readonly acquisition: AcquisitionApi
   readonly library: LibraryApi
   readonly manifest: ManifestApi
   readonly playback: PlaybackApi
