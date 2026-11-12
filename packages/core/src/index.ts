@@ -1,3 +1,5 @@
+export { createClient } from "./client.js"
+
 export {
   Aborted,
   AuthRequired,
@@ -15,3 +17,42 @@ export {
   UnexpectedResponse,
   UnsupportedDelivery,
 } from "./errors.js"
+
+export type {
+  AudioOptimized,
+  AuthApi,
+  ClientConfig,
+  Diagnostic,
+  DlsiteClient,
+  ImageOptimized,
+  Language,
+  LibraryApi,
+  LibraryOptions,
+  LibrarySnapshot,
+  LibraryWork,
+  LocalizedText,
+  MakerMetadata,
+  ManifestApi,
+  ManifestNode,
+  ManifestOptions,
+  MediaSource,
+  OperationOptions,
+  OptimizedMedia,
+  OriginalMedia,
+  PlaybackApi,
+  PlaybackOptions,
+  PlayfileEntry,
+  PurchaseRecord,
+  ResourceContext,
+  ScopedCookie,
+  SessionSnapshot,
+  SnapshotCookie,
+  SubtitleCandidate,
+  TextOptimized,
+  Track,
+  VersionCandidate,
+  WorkId,
+  WorkManifest,
+  WorkMetadata,
+  WorkType,
+} from "./model.js"
