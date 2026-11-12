@@ -353,6 +353,49 @@ describe("auth", () => {
     )
   })
 
+  it("keeps legal empty cookie values through import, export, and restore", async () => {
+    const handler = (seen: Array<string | undefined>): FakeHandler => {
+      return (url, init) => {
+        if (url.pathname !== salesPath) return new Response("", { status: 404 })
+        const cookie = (init.headers as Record<string, string>)["Cookie"]
+        seen.push(cookie)
+        if (cookie === undefined || !cookie.includes("play_session=")) {
+          return new Response("", { status: 401 })
+        }
+        return jsonResponse(salesResponse([]), {
+          "set-cookie": "server_empty=; Path=/; Secure; HttpOnly",
+        })
+      }
+    }
+
+    const importedSeen: Array<string | undefined> = []
+    const harness = authHarness(handler(importedSeen))
+    await harness.auth.importCookies([
+      playSessionCookie(),
+      playSessionCookie({ name: "imported_empty", value: "" }),
+    ])
+    const snapshot = await harness.auth.export()
+    expect(
+      snapshot.cookies
+        .filter((cookie) => cookie.value === "")
+        .map((cookie) => cookie.name)
+        .sort(),
+    ).toEqual(["imported_empty", "server_empty"])
+
+    const restoredSeen: Array<string | undefined> = []
+    const restored = authHarness(handler(restoredSeen))
+    await expect(restored.auth.restore(snapshot)).resolves.toBeUndefined()
+    expect(restoredSeen[0]).toContain("imported_empty=")
+    expect(restoredSeen[0]).toContain("server_empty=")
+    const after = await restored.auth.export()
+    expect(
+      after.cookies
+        .filter((cookie) => cookie.value === "")
+        .map((cookie) => cookie.name)
+        .sort(),
+    ).toEqual(["imported_empty", "server_empty"])
+  })
+
   it("rejects invalid snapshots and invalid cookie scopes without network", async () => {
     let calls = 0
     const harness = authHarness((url) => {
@@ -382,6 +425,28 @@ describe("auth", () => {
     ).rejects.toBeInstanceOf(InvalidInput)
     await expect(
       harness.auth.importCookies([playSessionCookie(), playSessionCookie()]),
+    ).rejects.toBeInstanceOf(InvalidInput)
+    await expect(
+      harness.auth.importCookies([
+        playSessionCookie({ value: "BAD\u0001VALUE" }),
+      ]),
+    ).rejects.toBeInstanceOf(InvalidInput)
+    await expect(
+      harness.auth.restore({
+        version: 1,
+        cookies: [
+          {
+            name: "bad",
+            value: "BAD\u0001VALUE",
+            domain: "play.dlsite.com",
+            path: "/",
+            secure: true,
+            hostOnly: true,
+            httpOnly: true,
+            expires: null,
+          },
+        ],
+      }),
     ).rejects.toBeInstanceOf(InvalidInput)
     expect(calls).toBe(0)
   })

@@ -18,7 +18,9 @@ import type {
 import type { Transport } from "./transport.js"
 
 const NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/
-const VALUE_RE = /^[\x21-\x3A\x3C-\x7E]+$/
+// Empty cookie values are legal. Deletion is expressed by Max-Age or Expires,
+// not by an empty value.
+const VALUE_RE = /^[\x21-\x3A\x3C-\x7E]*$/
 const PLAY_HOST = "play.dlsite.com"
 const SALES_URL = new URL("/api/v4/content/sales", "https://play.dlsite.com")
 const ALLOWED_SAME_SITE = new Set(["Strict", "Lax", "None"])
@@ -324,8 +326,7 @@ function hasControlOrSemicolon(value: string): boolean {
 }
 
 function validateValue(value: string): string {
-  if (value.length === 0 || !VALUE_RE.test(value))
-    throw new InvalidInput("cookie_value")
+  if (!VALUE_RE.test(value)) throw new InvalidInput("cookie_value")
   return value
 }
 

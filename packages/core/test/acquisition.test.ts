@@ -771,6 +771,52 @@ describe("acquisition", () => {
     }
   })
 
+  it("does not carry a cookie whose Max-Age expired during redirect cleanup", async () => {
+    const start = 1_700_000_000_000
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(start)
+    try {
+      const harness = createHarness(
+        withSales((url) => {
+          if (url.href !== entryUrl) return new Response("", { status: 404 })
+          const body = new ReadableStream({
+            start() {
+              // Keep the stream open so cleanup controls the timestamp.
+            },
+            cancel() {
+              harness.clock.advance(5_000)
+              vi.setSystemTime(harness.clock.now())
+            },
+          })
+          return new Response(body, {
+            status: 302,
+            headers: {
+              "Location": finalUrl,
+              "set-cookie":
+                "late=COOKIE; Max-Age=1; Domain=.dlsite.com; Path=/; Secure",
+            },
+          })
+        }),
+        { hostRateLimitMs: 0 },
+      )
+      await harness.client.auth.importCookies(baseCookies)
+      harness.server.calls.length = 0
+
+      const plan = await harness.client.acquisition.plan(workId)
+
+      expect(harness.server.calls.map((call) => call.url.href)).toEqual([
+        entryUrl,
+      ])
+      expect(plan.headers["Cookie"] ?? "").not.toContain("late=")
+      const snapshot = await harness.client.auth.export()
+      expect(snapshot.cookies.some((cookie) => cookie.name === "late")).toBe(
+        false,
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it.each([
     [
       "login redirect",
@@ -887,6 +933,41 @@ describe("acquisition", () => {
       InvalidInput,
     )
     expect(harness.server.calls).toHaveLength(0)
+  })
+
+  it("redacts an unverified work ID from the thrown error serialization", async () => {
+    const token = "SYNTHETIC_WORK_ID_TOKEN"
+    const rawWorkId = `https://example.test/callback?token=${token}`
+    const harness = await withSession(
+      () =>
+        new Response("not a zip", {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        }),
+    )
+
+    const unverified = await harness.client.acquisition
+      .plan(rawWorkId)
+      .catch((error: unknown) => error)
+    expect(unverified).toMatchObject({
+      code: "UnsupportedDelivery",
+      reason: "unsupported_content_type",
+    })
+    expect((unverified as { workId?: string }).workId).toBeUndefined()
+    expect(String(unverified)).not.toContain(token)
+    expect(JSON.stringify(unverified)).not.toContain(token)
+    expect(JSON.stringify(unverified)).not.toContain("example.test")
+    expect(harness.server.calls).toHaveLength(1)
+
+    const canonical = await harness.client.acquisition
+      .plan(workId)
+      .catch((error: unknown) => error)
+    expect(canonical).toMatchObject({
+      code: "UnsupportedDelivery",
+      reason: "unsupported_content_type",
+      workId,
+    })
+    expect(harness.server.calls).toHaveLength(2)
   })
 
   it("does not leak cookies, URLs, or response bodies through errors or logs", async () => {

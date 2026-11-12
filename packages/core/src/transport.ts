@@ -420,6 +420,10 @@ export class Transport {
       throw new TransportError("network")
     }
 
+    // Capture receipt before any body cleanup so Max-Age does not depend on
+    // how long canceling an unused response body takes.
+    const receivedAt = new Date(this.clock.now())
+
     if (response.redirected) {
       await input.transaction.cancelBody(response)
       throw new UnexpectedResponse(input.endpoint, "unexpected_redirect_follow")
@@ -457,7 +461,7 @@ export class Transport {
       } else {
         assertSafeHttpsUrl(target, input.endpoint)
       }
-      await this.storeCookies(input, response)
+      await this.storeCookies(input, response, receivedAt)
       return { type: "redirect", url: target }
     }
 
@@ -473,7 +477,7 @@ export class Transport {
       throw new HttpError(403, input.endpoint)
     }
     if (status === 429 || status === 503) {
-      await this.storeCookies(input, response)
+      await this.storeCookies(input, response, receivedAt)
       const retryAfterMs = parseRetryAfter(
         response.headers.get("retry-after"),
         input.now,
@@ -486,7 +490,7 @@ export class Transport {
       throw new HttpError(status, input.endpoint)
     }
 
-    await this.storeCookies(input, response)
+    await this.storeCookies(input, response, receivedAt)
     if (input.responseMode === "metadata") {
       const result: TransportHopResponse = {
         type: "response",
@@ -532,10 +536,10 @@ export class Transport {
       jar: CookieJar | undefined
     },
     response: Response,
+    receivedAt: Date,
   ): Promise<void> {
     if (input.credentials !== "session" || input.jar === undefined) return
     const setCookies = response.headers.getSetCookie()
-    const receivedAt = new Date(this.clock.now())
     for (const header of setCookies) {
       try {
         const parsed = Cookie.parse(header)
