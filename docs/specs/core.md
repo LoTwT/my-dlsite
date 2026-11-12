@@ -97,7 +97,7 @@ createClient（组装共享上下文）
 | `Grant`           | workId、baseUrl、原样签名参数、expiresAt                                 | 内部短期能力；按当前会话代次与 workId 隔离                       |
 | `LibrarySnapshot` | 匹配筛选的作品、元数据缺失的购买记录、已知非匹配类型的购买记录、逐条诊断 | 一次完整查询的结果；不声称含有可复用的增量游标；完整性门槛见上文 |
 | `ResourceContext` | workId、无签名的资源基址、清单 revision 与 hash                          | 表示一次清单读取所对应的资源版本；不包含 Grant 或签名参数        |
-| `WorkManifest`    | 资源上下文、完整文件树、音轨、字幕和版本候选                             | 不保存签名 URL；调用方可以按原树自行选择                         |
+| `WorkManifest`    | 资源上下文、完整文件树、未知字段、音轨、字幕和版本候选                   | 不保存签名 URL；调用方可以按原树自行选择                         |
 | `Track`           | 资源上下文、hashname、原路径、已解析的优化资源信息                       | 与产生它的清单版本绑定；原版格式与优化版格式分别表达             |
 | `MediaSource`     | url、headers、expiresAt，以及有来源的 MIME、大小等可选信息               | 当前路径的 headers 为空；由调用方交给播放器并在过期时重新解析    |
 | `AcquisitionPlan` | CORE-02 计划类型，当前未声明                                             | 含 Cookie 时属于凭据；有效期未知就不填，不伪造一个 TTL           |
