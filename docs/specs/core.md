@@ -30,7 +30,9 @@ core 是供 CLI、播放器插件和其他应用调用的 DLsite 已购音声核
 | 不完整元数据 | `sales` 中有部分作品没有对应的 `works` 元数据                                                                                                                                                                                      | 不静默丢弃这些购买记录，也不猜测其缺失原因                                                        |
 | 原版下载     | 已观察到 `play` → `www` → `download` 的单 ZIP 跳转；`www` 响应会更新 Cookie；最终请求携带 Cookie                                                                                                                                   | CORE-02 按此路径生成计划；下载计划与播放签名采用不同的凭据路径；凭据最小集合与文件 URL 寿命未验证 |
 
-脱敏报告保留的原版入口是 `GET https://play.dlsite.com/api/v3/download?workno=...`，样本 URL 另带一个 `method` 查询键，但其值未被脱敏材料保留。实现不猜测该值，首版只发送 `workno`；`method` 是否必需及其取值仍未消解，可由可靠的第一方调用点、打包/包装代码或其他可追溯材料补证，不能把缺少 fresh live 本身当作门禁。该入口、`www` 下载页和最终 `download.dlsite.com` 文件路径均来自同一脱敏观察，不能据此声称凭据最小集合或文件 URL 寿命已经验证。
+主控于 2026-11-12T08:31:25Z..08:33:05Z 对 `https://play.dlsite.com/` 做了匿名有界静态读取（1 HTML + 5 JS，无 Cookie/Authorization、无业务 API、无下载/登录、无 source map、未执行脚本）。当前 HTML 引用 `/assets/manifest-05c46c0d.js`；manifest 的 `work/:workno` 路由为 `/assets/_route-main-XNvxsNhj.js`，其 imports 含 `work-info.gJIGWdlK.chunk.js` 与 `work-common.RJUHEloo.chunk.js`。work-info 的 ZIP 菜单项与作品详情下载按钮均调用 `Y(work, "zip", ...)`；`Y` 调用 `window.open(me(work, method))`；work-common 导出的 `n`（源 `b`）先以 `URLSearchParams` 设置 `workno`，存在 method 时再设置 `method`，返回 `/api/v3/download?` 加查询串。因此本包单 ZIP 入口固定为 `GET https://play.dlsite.com/api/v3/download?workno=<workId>&method=zip`；移动页面的 `sp_page` 不在 CORE-02 范围。
+
+关键源副本：`https://play.dlsite.com/js/work-info.gJIGWdlK.chunk.js`（12286 bytes，SHA-256 `41303f7320d3c4d6321ab44422ad6a528a842264dfbc8e2db4885c577bb046e4`）与 `https://play.dlsite.com/js/work-common.RJUHEloo.chunk.js`（2591 bytes，SHA-256 `5fb90fae95e8fff10fd65dc24d9d648b6a7fefdafba7fcaa9ceb0a959f93d8d2`）。这是当前公开前端版本的客户端入口形态，不替换 CORE-01 早间读取的旧版本/hash；两批证据的来源与时间独立。没有真实请求新的 `method=zip` 路径，未证明省略 method 与显式传值等价，也未证明凭据最小集合、URL 寿命、最终文件可下载或服务端永久正确；缺少 fresh live 本身不是门禁。R1 的实现对齐仍需新的独立复审确认，不能据此声称 R1 已被独立 review 关闭。
 
 2026-11-12 另直接读取了当前公开前端副本，用于核对全量购买读取流程。读取时未发送 Cookie 或 Authorization，不跟随跳转、不重试，不执行脚本，也不加载 import 或 source map；没有调用业务 API：
 
@@ -164,7 +166,7 @@ core 自己读取 CDN 清单遇到 403 时，可以废弃该作品 Grant，重�
 
 ### 生成原版下载计划
 
-1. acquisition 固定当前 SessionContext，使用其 Cookie Jar 请求已观察的 `play.dlsite.com/api/v3/download?workno=...` 入口，手动解析 play → www 的跳转。每一跳接收 Set-Cookie，并在取得 host 发送资格后按当前 Jar 与目标 Domain/Path/Secure 重算 Cookie；它与播放签名 Grant 是不同凭据流程。
+1. acquisition 固定当前 SessionContext，使用其 Cookie Jar 请求已观察的 `play.dlsite.com/api/v3/download?workno=...&method=zip` 入口，手动解析 play → www 的跳转。每一跳接收 Set-Cookie，并在取得 host 发送资格后按当前 Jar 与目标 Domain/Path/Secure 重算 Cookie；它与播放签名 Grant 是不同凭据流程。
 2. 只跟随已观察的 `www.dlsite.com/home/download/=/product_id/{workId}.html` 页面。未知 host/path、跨作用域目标、带 userinfo、非 HTTPS、端口、循环和缺失/非法 Location 都明确失败；不能把任意同 host 路径当作可携带 Cookie 的目标。
 3. 当 Location 已指向 `download.dlsite.com` 的已观察单 ZIP 路径（`/get/=/.../file/{filename}/_/...`，以及 `/file/{filename}/` 形态）时停止跟随。最终 URL 只接受已观察的 `update_date` 查询键，未知查询键按不支持的交付失败。此时不额外 GET 或 HEAD 最终文件，避免为探测消费可能只能使用一次的 URL；先接收本次响应 Cookie 更新，再按最终 URL 计算计划 headers。
 4. 文件名优先从已确认的 `/file/{filename}/` 路径提取并解码百分号编码，直接文件响应才回退到 `Content-Disposition`。MIME 与大小只在响应头可靠时填写；有效期没有可靠来源时省略，不伪造 TTL。仅凭 URL 和 Cookie 的存在，不声称已经验证文件可下载。

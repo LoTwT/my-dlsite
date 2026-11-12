@@ -20,6 +20,8 @@ const PLAY_HOST = "play.dlsite.com"
 const WWW_HOST = "www.dlsite.com"
 const DOWNLOAD_HOST = "download.dlsite.com"
 const ENTRY_PATH = "/api/v3/download"
+// The first-party work page passes "zip" for both single-ZIP entry points.
+const ZIP_METHOD = "zip"
 const WWW_DOWNLOAD_PREFIX = "/home/download/=/product_id/"
 const ZIP_CONTENT_TYPES = new Set([
   "application/zip",
@@ -177,6 +179,7 @@ export class Acquisition implements AcquisitionApi {
 function buildEntryUrl(workId: string): URL {
   const url = new URL(ENTRY_PATH, `https://${PLAY_HOST}`)
   url.searchParams.set("workno", workId)
+  url.searchParams.set("method", ZIP_METHOD)
   return url
 }
 

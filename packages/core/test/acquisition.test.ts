@@ -15,7 +15,7 @@ import {
 } from "./helpers.js"
 
 const workId = "RJ000001"
-const entryUrl = `https://play.dlsite.com/api/v3/download?workno=${workId}`
+const entryUrl = `https://play.dlsite.com/api/v3/download?workno=${workId}&method=zip`
 const wwwUrl = `https://www.dlsite.com/home/download/=/product_id/${workId}.html`
 const finalUrl = `https://download.dlsite.com/get/=/type/work/domain/doujin/dir/RJ000000/file/${workId}.zip/_/20261016141106?update_date=2026-10-16`
 
@@ -226,6 +226,20 @@ describe("acquisition", () => {
     expect(plan).not.toHaveProperty("mimeType")
     expect(plan).not.toHaveProperty("sizeBytes")
     expect(plan).not.toHaveProperty("expiresAt")
+  })
+
+  it("encodes the fixed zip method and the work ID in the entry query", async () => {
+    const rawWorkId = "RJ 001&x=1"
+    const expectedEntry =
+      "https://play.dlsite.com/api/v3/download?workno=RJ+001%26x%3D1&method=zip"
+    const harness = await withSession(() => new Response("", { status: 404 }))
+
+    await expect(
+      harness.client.acquisition.plan(rawWorkId),
+    ).rejects.toMatchObject({ code: "HttpError", status: 404 })
+    expect(harness.server.calls.map((call) => call.url.href)).toEqual([
+      expectedEntry,
+    ])
   })
 
   it("uses a direct ZIP response and cancels its body without reading it", async () => {
