@@ -56,6 +56,7 @@ export interface TransportHopRequest {
 
 export interface TransportHopResponse {
   type: "response"
+  status: number
   contentType: string | null
   contentLength: string | null
   contentDisposition: string | null
@@ -145,6 +146,18 @@ class Transaction {
     } catch {
       throw this.abortError()
     }
+    if (this.signal.aborted) throw this.abortError()
+  }
+
+  async cancelBody(response: Response): Promise<void> {
+    // Body cleanup shares the transaction deadline. A stuck cancel must not
+    // outlive the transaction or keep the host gate occupied.
+    const cancellation = cancelResponseBody(response)
+    if (this.signal.aborted) {
+      void cancellation
+      throw this.abortError()
+    }
+    await Promise.race([cancellation, abortPromise(this.signal)])
     if (this.signal.aborted) throw this.abortError()
   }
 }
@@ -288,6 +301,7 @@ export class Transport {
       if (hop.type !== "json") {
         throw new UnexpectedResponse(request.endpoint, "unexpected_response")
       }
+      if (transaction.signal.aborted) throw transaction.abortError()
       return hop.value
     }
   }
@@ -304,6 +318,7 @@ export class Transport {
         assertSafeHttpsUrl(request.url, request.endpoint)
         for (;;) {
           const hop = await this.sendMetadataHop(request, transaction)
+          if (transaction.signal.aborted) throw transaction.abortError()
           if (hop.type !== "retry") return hop
           if (retries >= 1) {
             if (hop.status === 429) throw new RateLimited(hop.retryAfterMs)
@@ -406,14 +421,14 @@ export class Transport {
     }
 
     if (response.redirected) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       throw new UnexpectedResponse(input.endpoint, "unexpected_redirect_follow")
     }
 
     const status = response.status
     if (status >= 300 && status < 400) {
       const location = response.headers.get("location")
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       if (location === null) {
         throw new UnexpectedResponse(
           input.endpoint,
@@ -447,14 +462,14 @@ export class Transport {
     }
 
     if (status === 401) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       if (input.authContext === "play-session") {
         throw new AuthRequired(input.endpoint)
       }
       throw new HttpError(status, input.endpoint)
     }
     if (status === 403) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       throw new HttpError(403, input.endpoint)
     }
     if (status === 429 || status === 503) {
@@ -463,11 +478,11 @@ export class Transport {
         response.headers.get("retry-after"),
         input.now,
       )
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       return { type: "retry", retryAfterMs, status }
     }
     if (status < 200 || status >= 300) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       throw new HttpError(status, input.endpoint)
     }
 
@@ -475,12 +490,13 @@ export class Transport {
     if (input.responseMode === "metadata") {
       const result: TransportHopResponse = {
         type: "response",
+        status,
         contentType: response.headers.get("content-type"),
         contentLength: response.headers.get("content-length"),
         contentDisposition: response.headers.get("content-disposition"),
         contentEncoding: response.headers.get("content-encoding"),
       }
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       return result
     }
 
@@ -488,7 +504,7 @@ export class Transport {
       response.headers.get("content-type") ?? ""
     ).toLowerCase()
     if (contentType.length > 0 && !contentType.includes("json")) {
-      await cancelBody(response)
+      await input.transaction.cancelBody(response)
       throw new UnexpectedResponse(input.endpoint, "unexpected_content_type")
     }
 
@@ -564,7 +580,7 @@ export class Transport {
   }
 }
 
-async function cancelBody(response: Response): Promise<void> {
+async function cancelResponseBody(response: Response): Promise<void> {
   try {
     await response.body?.cancel()
   } catch {

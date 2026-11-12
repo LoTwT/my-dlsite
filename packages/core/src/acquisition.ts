@@ -124,6 +124,10 @@ export class Acquisition implements AcquisitionApi {
     response: TransportHopResponse,
     isPlayEntry: boolean,
   ): Promise<AcquisitionPlan> {
+    if (response.status === 206) {
+      throw new UnexpectedResponse(ENDPOINT, "partial_content")
+    }
+
     const contentType = mimeEssence(response.contentType)
     const filename = filenameFromResponse(url, response)
     const zipMime = contentType !== null && ZIP_CONTENT_TYPES.has(contentType)

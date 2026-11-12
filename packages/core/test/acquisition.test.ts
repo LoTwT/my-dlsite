@@ -33,13 +33,16 @@ function redirect(location: string, setCookie?: string): Response {
   return new Response("", { status: 302, headers })
 }
 
-function fileResponse(headers: Record<string, string>): {
+function fileResponse(
+  headers: Record<string, string>,
+  status = 200,
+): {
   response: Response
   canceled: () => boolean
 } {
   let canceled = false
   const response = {
-    status: 200,
+    status,
     headers: new Headers(headers),
     redirected: false,
     body: {
@@ -55,6 +58,55 @@ function fileResponse(headers: Record<string, string>): {
     },
   } as unknown as Response
   return { response, canceled: () => canceled }
+}
+
+function deferredBodyResponse(
+  status: number,
+  headers: Record<string, string>,
+): {
+  response: Response
+  cancelStarted: Promise<void>
+  releaseCancel: () => void
+  canceled: () => boolean
+} {
+  let canceled = false
+  let startedResolve: (() => void) | undefined
+  const cancelStarted = new Promise<void>((resolve) => {
+    startedResolve = resolve
+  })
+  let releaseResolve: (() => void) | undefined
+  const pendingCancel = new Promise<void>((resolve) => {
+    releaseResolve = resolve
+  })
+  const response = {
+    status,
+    headers: new Headers(headers),
+    redirected: false,
+    body: {
+      cancel: () => {
+        startedResolve?.()
+        return pendingCancel.then(() => {
+          canceled = true
+        })
+      },
+    },
+    text: () => {
+      throw new Error("body_read")
+    },
+    json: () => {
+      throw new Error("body_read")
+    },
+  } as unknown as Response
+  return {
+    response,
+    cancelStarted,
+    releaseCancel: () => releaseResolve?.(),
+    canceled: () => canceled,
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
 function domainCookie(name: string, value: string): ScopedCookie {
@@ -622,6 +674,196 @@ describe("acquisition", () => {
     controller.abort()
     await expect(pending).rejects.toBeInstanceOf(Aborted)
     expect(harness.server.calls).toHaveLength(2)
+  })
+
+  it("does not return a direct ZIP plan when body cleanup outlives the deadline", async () => {
+    const body = deferredBodyResponse(200, {
+      "content-type": "application/zip",
+      "content-length": "12345",
+      "content-disposition": `attachment; filename="${workId}.zip"`,
+    })
+    const harness = await withSession(
+      (url) => {
+        if (url.href === entryUrl) return body.response
+        return new Response("", { status: 404 })
+      },
+      { transactionTimeoutMs: 20 },
+    )
+
+    const pending = harness.client.acquisition.plan(workId)
+    const settled = pending.then(
+      () => ({ kind: "plan" as const }),
+      (error: unknown) => ({ kind: "error" as const, error }),
+    )
+    await body.cancelStarted
+    await delay(60)
+    const outcome = await Promise.race([
+      settled,
+      delay(0).then(() => ({ kind: "pending" as const })),
+    ])
+
+    try {
+      expect(outcome).toMatchObject({
+        kind: "error",
+        error: { code: "TransportError", reason: "timeout" },
+      })
+      const salesBefore = harness.server.calls.filter(
+        (call) => call.url.pathname === "/api/v4/content/sales",
+      ).length
+      await expect(harness.client.auth.validate()).resolves.toBeUndefined()
+      const salesAfter = harness.server.calls.filter(
+        (call) => call.url.pathname === "/api/v4/content/sales",
+      ).length
+      expect(salesAfter).toBe(salesBefore + 1)
+    } finally {
+      body.releaseCancel()
+    }
+  })
+
+  it("does not return a download plan when final redirect cleanup outlives the deadline", async () => {
+    const body = deferredBodyResponse(302, { Location: finalUrl })
+    const harness = await withSession(
+      (url) => {
+        if (url.href === entryUrl) return redirect(wwwUrl)
+        if (url.href === wwwUrl) return body.response
+        return new Response("", { status: 404 })
+      },
+      { transactionTimeoutMs: 20 },
+    )
+
+    const pending = harness.client.acquisition.plan(workId)
+    const settled = pending.then(
+      () => ({ kind: "plan" as const }),
+      (error: unknown) => ({ kind: "error" as const, error }),
+    )
+    await body.cancelStarted
+    await delay(60)
+    const outcome = await Promise.race([
+      settled,
+      delay(0).then(() => ({ kind: "pending" as const })),
+    ])
+
+    try {
+      expect(outcome).toMatchObject({
+        kind: "error",
+        error: { code: "TransportError", reason: "timeout" },
+      })
+      expect(harness.server.calls.map((call) => call.url.href)).toEqual([
+        entryUrl,
+        wwwUrl,
+      ])
+    } finally {
+      body.releaseCancel()
+    }
+  })
+
+  it.each([
+    [
+      "login redirect",
+      () =>
+        deferredBodyResponse(302, {
+          Location: "https://www.dlsite.com/home/login/=/skip_register/1",
+        }),
+    ],
+    ["401", () => deferredBodyResponse(401, {})],
+  ])(
+    "does not invalidate Play when the caller cancels during %s cleanup",
+    async (_label, makeResponse) => {
+      const body = makeResponse()
+      const harness = await withSession((url) => {
+        if (url.href === entryUrl) return body.response
+        return new Response("", { status: 404 })
+      })
+
+      const controller = new AbortController()
+      const pending = harness.client.acquisition.plan(workId, {
+        signal: controller.signal,
+      })
+      const settled = pending.then(
+        () => ({ kind: "plan" as const }),
+        (error: unknown) => ({ kind: "error" as const, error }),
+      )
+      await body.cancelStarted
+      controller.abort()
+      body.releaseCancel()
+
+      expect(await settled).toMatchObject({
+        kind: "error",
+        error: { code: "Aborted" },
+      })
+      const salesBefore = harness.server.calls.filter(
+        (call) => call.url.pathname === "/api/v4/content/sales",
+      ).length
+      await expect(harness.client.auth.validate()).resolves.toBeUndefined()
+      const salesAfter = harness.server.calls.filter(
+        (call) => call.url.pathname === "/api/v4/content/sales",
+      ).length
+      expect(salesAfter).toBe(salesBefore + 1)
+    },
+  )
+
+  it("keeps SessionChanged ahead of cleanup cancellation after a replacement", async () => {
+    const body = deferredBodyResponse(302, {
+      Location: "https://www.dlsite.com/home/login/=/skip_register/1",
+    })
+    const harness = createHarness(
+      (url) => {
+        if (url.pathname === "/api/v4/content/sales") {
+          return jsonResponse(salesResponse([]))
+        }
+        if (url.href === entryUrl) return redirect(wwwUrl)
+        if (url.href === wwwUrl) return body.response
+        return new Response("", { status: 404 })
+      },
+      { transactionTimeoutMs: 5_000 },
+    )
+    await harness.client.auth.importCookies([
+      playSessionCookie({ value: "OLD" }),
+    ])
+    harness.server.calls.length = 0
+
+    const pending = harness.client.acquisition.plan(workId)
+    const settled = pending.then(
+      () => ({ kind: "plan" as const }),
+      (error: unknown) => ({ kind: "error" as const, error }),
+    )
+    await body.cancelStarted
+    await harness.client.auth.importCookies([
+      playSessionCookie({ value: "NEW" }),
+    ])
+    body.releaseCancel()
+
+    expect(await settled).toMatchObject({
+      kind: "error",
+      error: { code: "SessionChanged" },
+    })
+    await expect(harness.client.auth.validate()).resolves.toBeUndefined()
+    const snapshot = await harness.client.auth.export()
+    expect(snapshot.cookies[0]?.value).toBe("NEW")
+  })
+
+  it("rejects a 206 partial response without reporting its partial length", async () => {
+    const file = fileResponse(
+      {
+        "content-type": "application/zip",
+        "content-length": "10",
+        "content-range": "bytes 0-9/100",
+        "content-disposition": `attachment; filename="${workId}.zip"`,
+      },
+      206,
+    )
+    const harness = await withSession((url) => {
+      if (url.href === entryUrl) return file.response
+      return new Response("", { status: 404 })
+    })
+
+    await expect(harness.client.acquisition.plan(workId)).rejects.toMatchObject(
+      {
+        code: "UnexpectedResponse",
+        diagnostic: "partial_content",
+      },
+    )
+    expect(file.canceled()).toBe(true)
   })
 
   it("rejects an empty work ID without network", async () => {

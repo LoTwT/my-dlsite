@@ -30,7 +30,7 @@ core 是供 CLI、播放器插件和其他应用调用的 DLsite 已购音声核
 | 不完整元数据 | `sales` 中有部分作品没有对应的 `works` 元数据                                                                                                                                                                                      | 不静默丢弃这些购买记录，也不猜测其缺失原因                                                        |
 | 原版下载     | 已观察到 `play` → `www` → `download` 的单 ZIP 跳转；`www` 响应会更新 Cookie；最终请求携带 Cookie                                                                                                                                   | CORE-02 按此路径生成计划；下载计划与播放签名采用不同的凭据路径；凭据最小集合与文件 URL 寿命未验证 |
 
-脱敏报告保留的原版入口是 `GET https://play.dlsite.com/api/v3/download?workno=...`，样本 URL 另带一个 `method` 查询键，但其值未被脱敏材料保留。实现不猜测该值，首版只发送 `workno`；`method` 是否必需及其取值需要另行授权的真实服务验证。该入口、`www` 下载页和最终 `download.dlsite.com` 文件路径均来自同一脱敏观察，不能据此声称凭据最小集合或文件 URL 寿命已经验证。
+脱敏报告保留的原版入口是 `GET https://play.dlsite.com/api/v3/download?workno=...`，样本 URL 另带一个 `method` 查询键，但其值未被脱敏材料保留。实现不猜测该值，首版只发送 `workno`；`method` 是否必需及其取值仍未消解，可由可靠的第一方调用点、打包/包装代码或其他可追溯材料补证，不能把缺少 fresh live 本身当作门禁。该入口、`www` 下载页和最终 `download.dlsite.com` 文件路径均来自同一脱敏观察，不能据此声称凭据最小集合或文件 URL 寿命已经验证。
 
 2026-11-12 另直接读取了当前公开前端副本，用于核对全量购买读取流程。读取时未发送 Cookie 或 Authorization，不跟随跳转、不重试，不执行脚本，也不加载 import 或 source map；没有调用业务 API：
 
@@ -168,10 +168,11 @@ core 自己读取 CDN 清单遇到 403 时，可以废弃该作品 Grant，重�
 2. 只跟随已观察的 `www.dlsite.com/home/download/=/product_id/{workId}.html` 页面。未知 host/path、跨作用域目标、带 userinfo、非 HTTPS、端口、循环和缺失/非法 Location 都明确失败；不能把任意同 host 路径当作可携带 Cookie 的目标。
 3. 当 Location 已指向 `download.dlsite.com` 的已观察单 ZIP 路径（`/get/=/.../file/{filename}/_/...`，以及 `/file/{filename}/` 形态）时停止跟随。最终 URL 只接受已观察的 `update_date` 查询键，未知查询键按不支持的交付失败。此时不额外 GET 或 HEAD 最终文件，避免为探测消费可能只能使用一次的 URL；先接收本次响应 Cookie 更新，再按最终 URL 计算计划 headers。
 4. 文件名优先从已确认的 `/file/{filename}/` 路径提取并解码百分号编码，直接文件响应才回退到 `Content-Disposition`。MIME 与大小只在响应头可靠时填写；有效期没有可靠来源时省略，不伪造 TTL。仅凭 URL 和 Cookie 的存在，不声称已经验证文件可下载。
-5. 若入口直接返回受支持的文件响应而不是重定向，读取必要响应头后立即取消 body；取消不保证网络接收了零字节，但不能读取或保存文件。不得把 HTML 登录页、序列号页或其他非 ZIP 响应当作 ZIP。
-6. 调用方马上执行下载；认证或地址失效后重新生成计划，而不是永久保存 URL 和 Cookie。
+5. 若入口直接返回受支持的文件响应而不是重定向，读取必要响应头后立即取消 body；取消等待受同一事务期限约束，超时或取消时不返回计划。取消不保证网络接收了零字节，但不能读取或保存文件。不得把 HTML 登录页、序列号页或其他非 ZIP 响应当作 ZIP。
+6. 该流程不实现 Range 或断点下载；意外的 206 局部响应返回 `UnexpectedResponse("partial_content")`，立即尽力取消 body，不把局部 `Content-Length` 当作 `sizeBytes`。
+7. 调用方马上执行下载；认证或地址失效后重新生成计划，而不是永久保存 URL 和 Cookie。
 
-原版入口的明确 401 或已知登录跳转按 Play 会话请求处理，返回 `AuthRequired` 并使 Play 会话失效。www 步骤的 401/403 保留为 `HttpError`，主站登录跳转按 `UnexpectedResponse("login_redirect")` 处理，均不使 Play 会话失效。会话替换时旧操作返回 `SessionChanged`，迟到响应不能修改新代次或返回旧账号的计划；取消或失败不产生计划。
+原版入口的明确 401 或已知登录跳转按 Play 会话请求处理，返回 `AuthRequired` 并使 Play 会话失效。www 步骤的 401/403 保留为 `HttpError`，主站登录跳转按 `UnexpectedResponse("login_redirect")` 处理，均不使 Play 会话失效。调用方取消优先于认证分类：401/登录跳转清理期间取消返回 `Aborted`，不使 Play 会话失效；会话替换仍优先返回 `SessionChanged`。迟到响应不能修改新代次或返回旧账号的计划；取消或失败不产生计划。
 
 遇到未验证的分卷 HTML、序列号页面或其他交付方式，返回 `UnsupportedDelivery`。不输出尚未核实的文件顺序、序列号或凭据。
 
@@ -183,7 +184,7 @@ transport 的实现策略为：Client 内按 host 串行，令牌桶容量 1、�
 
 重定向每一跳都重新判断目标与 Cookie 作用域，不原样转发上一跳的 Cookie 或 Authorization；请求方法和请求体按重定向状态处理，无法安全处理的情况直接报错。签名内容请求显式关闭登录凭据。具体重定向语义参考 [Fetch Standard](https://fetch.spec.whatwg.org/#http-redirect-fetch)。
 
-acquisition 使用同一 transport 的手动 hop 原语：整条 play → www 链共用一个 30 秒事务期限、host 串行和一次 429/503 重试预算；它只接受一个可跟随的 www 跳转，最终 download Location 不进入发送队列，也不占用 host 发送资格。
+acquisition 使用同一 transport 的手动 hop 原语：整条 play → www 链共用一个 30 秒事务期限、host 串行和一次 429/503 重试预算；它只接受一个可跟随的 www 跳转，最终 download Location 不进入发送队列，也不占用 host 发送资格。metadata 的 body 清理同样受事务信号约束；清理超时或取消不返回计划，host 队列在任务结束时释放。
 
 | 错误                       | 触发条件                                                                                  | 状态影响                                                                 |
 | -------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
@@ -243,6 +244,8 @@ core 不定义以下能力的假接口或假数据：
 | 播放与版本 | 默认不探测音频正文、旧 Track 与新基址或已知新版本不匹配时返回 StaleManifest、等待 Grant 后再次核对最近清单、重新获取清单后使用新 Track、未观察到同基址更新时不声称文件仍存在                      |
 | 下载计划   | 每跳 Cookie 更新、在最终 Location 停止且不请求文件、URL 文件名解析、直接文件响应及时取消、未知有效期不造值、未知交付方式明确失败、Play 入口与 www 步骤的认证错误分类、会话替换或取消不返回旧计划  |
 | 凭据       | 在 URL、请求头、响应头及错误正文中埋入假敏感值，确认日志和错误摘要不泄漏；明确导出的快照与下载计划仍属于凭据                                                                                      |
+
+下载计划的清理与取消回归：直接 ZIP 或最终 Location 的 body 清理共享事务期限，超时或取消不返回计划且不长期占用 host 队列；401/登录跳转清理期间的调用方取消返回 `Aborted`，不使 Play 失效，`SessionChanged` 仍优先；意外的 206 局部响应返回 `UnexpectedResponse("partial_content")`，不使用局部 `Content-Length`。
 
 core 的实际命令：
 
