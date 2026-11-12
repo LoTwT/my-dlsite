@@ -73,8 +73,8 @@ export interface FakeClock {
   sleeps: number[]
 }
 
-export function createClock(): FakeClock {
-  let milliseconds = 1_700_000_000_000
+export function createClock(startMilliseconds = 1_700_000_000_000): FakeClock {
+  let milliseconds = startMilliseconds
   const sleeps: number[] = []
   return {
     now: () => milliseconds,

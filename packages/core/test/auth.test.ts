@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { Auth } from "../src/auth.js"
 import {
   Aborted,
@@ -19,9 +19,12 @@ import {
 
 const salesPath = "/api/v4/content/sales"
 
-function authHarness(handler: FakeHandler) {
+function authHarness(
+  handler: FakeHandler,
+  startMilliseconds = 1_700_000_000_000,
+) {
   const server = createFakeServer(handler)
-  const clock = createClock()
+  const clock = createClock(startMilliseconds)
   const transport = new Transport({
     fetch: server.fetch,
     userAgent: "test",
@@ -168,27 +171,163 @@ describe("auth", () => {
     expect(snapshot.cookies[0]?.value).toBe("OLD_SESSION")
   })
 
-  it("exports Max-Age as the Jar's absolute deadline without recharging it", async () => {
-    const harness = authHarness((url) => {
-      if (url.pathname !== salesPath) return new Response("", { status: 404 })
-      return jsonResponse(salesResponse([]), {
-        "set-cookie":
-          "play_session=ROTATED; Max-Age=60; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure; HttpOnly",
-      })
-    })
-    await harness.auth.importCookies([playSessionCookie({ value: "OLD" })])
-    const before = await harness.auth.export()
-    const expires = before.cookies[0]?.expires
-    expect(expires).not.toBeNull()
-    if (expires === null || expires === undefined) return
-    const now = Math.floor(Date.now() / 1_000)
-    expect(expires).toBeGreaterThanOrEqual(now + 55)
-    expect(expires).toBeLessThanOrEqual(now + 61)
+  it("keeps a Max-Age deadline across requests and rejects restore after it expires", async () => {
+    const base = 1_700_000_000_000
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(base)
+    try {
+      let setCookie = true
+      const seen: Array<string | undefined> = []
+      const harness = authHarness((url, init) => {
+        if (url.pathname !== salesPath) return new Response("", { status: 404 })
+        const cookie = (init.headers as Record<string, string>)["Cookie"]
+        seen.push(cookie)
+        if (cookie === undefined || !cookie.includes("play_session=")) {
+          return new Response("", { status: 401 })
+        }
+        if (setCookie) {
+          setCookie = false
+          return jsonResponse(salesResponse([]), {
+            "set-cookie":
+              "play_session=ROTATED; Max-Age=60; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure; HttpOnly",
+          })
+        }
+        return jsonResponse(salesResponse([]))
+      }, base)
+      await harness.auth.importCookies([playSessionCookie({ value: "OLD" })])
+      const deadline = Math.floor((base + 60_000) / 1_000)
+      expect((await harness.auth.export()).cookies[0]?.expires).toBe(deadline)
 
-    harness.clock.advance(20_000)
-    const after = await harness.auth.export()
-    expect(after.cookies[0]?.expires).toBe(expires)
+      harness.clock.advance(20_000)
+      vi.setSystemTime(base + 20_000)
+      await harness.auth.validate()
+      expect(seen[seen.length - 1]).toContain("play_session=ROTATED")
+      const beforeExpiry = await harness.auth.export()
+      expect(beforeExpiry.cookies[0]?.expires).toBe(deadline)
+
+      harness.clock.advance(45_000)
+      vi.setSystemTime(base + 65_000)
+      expect((await harness.auth.export()).cookies).toHaveLength(0)
+      await expect(harness.auth.validate()).rejects.toBeInstanceOf(AuthRequired)
+      expect(seen[seen.length - 1]).toBeUndefined()
+
+      const restoredSeen: Array<string | undefined> = []
+      const restored = authHarness((url, init) => {
+        if (url.pathname !== salesPath) return new Response("", { status: 404 })
+        const cookie = (init.headers as Record<string, string>)["Cookie"]
+        restoredSeen.push(cookie)
+        return cookie?.includes("play_session=")
+          ? jsonResponse(salesResponse([]))
+          : new Response("", { status: 401 })
+      }, base + 65_000)
+      await expect(restored.auth.restore(beforeExpiry)).rejects.toBeInstanceOf(
+        AuthRequired,
+      )
+      expect(restoredSeen).toHaveLength(1)
+      expect(restoredSeen[0]).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
   })
+
+  it("allows a new Set-Cookie to establish a new Max-Age deadline", async () => {
+    const base = 1_700_000_000_000
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(base)
+    try {
+      let salesCalls = 0
+      const harness = authHarness((url) => {
+        if (url.pathname !== salesPath) return new Response("", { status: 404 })
+        salesCalls += 1
+        if (salesCalls === 1) {
+          return jsonResponse(salesResponse([]), {
+            "set-cookie":
+              "play_session=FIRST; Max-Age=60; Path=/; Secure; HttpOnly",
+          })
+        }
+        if (salesCalls === 2) {
+          return jsonResponse(salesResponse([]), {
+            "set-cookie":
+              "play_session=SECOND; Max-Age=120; Path=/; Secure; HttpOnly",
+          })
+        }
+        return jsonResponse(salesResponse([]))
+      }, base)
+      await harness.auth.importCookies([playSessionCookie({ value: "OLD" })])
+      expect((await harness.auth.export()).cookies[0]?.expires).toBe(
+        Math.floor((base + 60_000) / 1_000),
+      )
+
+      harness.clock.advance(20_000)
+      vi.setSystemTime(base + 20_000)
+      await harness.auth.validate()
+      expect((await harness.auth.export()).cookies[0]?.expires).toBe(
+        Math.floor((base + 140_000) / 1_000),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([0, -1])(
+    "does not export a Max-Age %i deletion as a session cookie",
+    async (maxAge) => {
+      const base = 1_700_000_000_000
+      vi.useFakeTimers({ toFake: ["Date"] })
+      vi.setSystemTime(base)
+      try {
+        let firstSalesCall = true
+        const seen: Array<string | undefined> = []
+        const harness = authHarness((url, init) => {
+          if (url.pathname !== salesPath)
+            return new Response("", { status: 404 })
+          const cookie = (init.headers as Record<string, string>)["Cookie"]
+          seen.push(cookie)
+          if (firstSalesCall) {
+            firstSalesCall = false
+            return jsonResponse(salesResponse([]), {
+              "set-cookie": `play_session=DELETED; Max-Age=${maxAge}; Path=/; Secure; HttpOnly`,
+            })
+          }
+          return cookie?.includes("keep=KEEP")
+            ? jsonResponse(salesResponse([]))
+            : new Response("", { status: 401 })
+        }, base)
+        await harness.auth.importCookies([
+          playSessionCookie({ value: "OLD" }),
+          playSessionCookie({
+            name: "keep",
+            value: "KEEP",
+            expires: undefined,
+          }),
+        ])
+
+        const snapshot = await harness.auth.export()
+        expect(snapshot.cookies.map((cookie) => cookie.name)).toEqual(["keep"])
+        expect(snapshot.cookies[0]?.expires).toBeNull()
+
+        await harness.auth.validate()
+        expect(seen[seen.length - 1]).toContain("keep=KEEP")
+        expect(seen[seen.length - 1]).not.toContain("play_session=")
+
+        const restoredSeen: Array<string | undefined> = []
+        const restored = authHarness((url, init) => {
+          if (url.pathname !== salesPath)
+            return new Response("", { status: 404 })
+          const cookie = (init.headers as Record<string, string>)["Cookie"]
+          restoredSeen.push(cookie)
+          return cookie?.includes("keep=KEEP")
+            ? jsonResponse(salesResponse([]))
+            : new Response("", { status: 401 })
+        }, base)
+        await restored.auth.restore(snapshot)
+        expect(restoredSeen[0]).toContain("keep=KEEP")
+        expect(restoredSeen[0]).not.toContain("play_session=")
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+  )
 
   it("exports and restores only versioned cookie scope", async () => {
     const harness = authHarness(salesHandler())

@@ -111,9 +111,10 @@ export class Auth implements AuthApi {
     if (session === null) return { version: 1, cookies: [] }
     const cookies = await session.jar.store.getAllCookies()
     this.assertCurrent(session)
+    const nowMilliseconds = this.now()
     const snapshotCookies: SnapshotCookie[] = []
     for (const cookie of cookies) {
-      const snapshotCookie = toSnapshotCookie(cookie)
+      const snapshotCookie = toSnapshotCookie(cookie, nowMilliseconds)
       if (snapshotCookie !== null) snapshotCookies.push(snapshotCookie)
     }
     return { version: 1, cookies: snapshotCookies }
@@ -406,14 +407,22 @@ function createSnapshotCookie(
   })
 }
 
-function toSnapshotCookie(cookie: Cookie): SnapshotCookie | null {
+function toSnapshotCookie(
+  cookie: Cookie,
+  nowMilliseconds: number,
+): SnapshotCookie | null {
   if (cookie.domain === null || cookie.path === null || cookie.key.length === 0)
     return null
-  let expires: number | null = null
-  const expiryTime = cookie.expiryTime()
-  if (expiryTime !== undefined && Number.isFinite(expiryTime)) {
-    expires = Math.floor(expiryTime / 1_000)
+  const expiryTime = absoluteCookieExpiry(cookie)
+  if (
+    expiryTime === -Infinity ||
+    (Number.isFinite(expiryTime) && expiryTime <= nowMilliseconds)
+  ) {
+    return null
   }
+  const expires = Number.isFinite(expiryTime)
+    ? Math.floor(expiryTime / 1_000)
+    : null
   const sameSiteValue = cookie.sameSite?.toLowerCase()
   const sameSite =
     sameSiteValue === "strict"
@@ -434,4 +443,20 @@ function toSnapshotCookie(cookie: Cookie): SnapshotCookie | null {
     expires,
     ...(sameSite === undefined ? {} : { sameSite }),
   }
+}
+
+function absoluteCookieExpiry(cookie: Cookie): number {
+  // Do not use expiryTime(): it offsets Max-Age from lastAccessed, which
+  // CookieJar.getCookies() advances on every outbound request. creation is
+  // the receipt time; normalized cookies already carry an absolute expires.
+  if (typeof cookie.maxAge === "number") {
+    if (cookie.maxAge <= 0) return -Infinity
+    return cookie.creation instanceof Date
+      ? cookie.creation.getTime() + cookie.maxAge * 1_000
+      : -Infinity
+  }
+  if (cookie.maxAge === "-Infinity") return -Infinity
+  if (cookie.maxAge === "Infinity") return Infinity
+  if (cookie.expires === null || cookie.expires === "Infinity") return Infinity
+  return cookie.expires instanceof Date ? cookie.expires.getTime() : Infinity
 }

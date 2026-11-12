@@ -1,4 +1,4 @@
-import type { CookieJar } from "tough-cookie"
+import { Cookie, type CookieJar } from "tough-cookie"
 import {
   Aborted,
   AuthRequired,
@@ -382,9 +382,44 @@ export class Transport {
   ): Promise<void> {
     if (input.credentials !== "session" || input.jar === undefined) return
     const setCookies = response.headers.getSetCookie()
+    const receivedAt = new Date(this.clock.now())
     for (const header of setCookies) {
       try {
-        await input.jar.setCookie(header, input.url, { ignoreError: true })
+        const parsed = Cookie.parse(header)
+        if (parsed === undefined) continue
+
+        let deleteMarker = false
+        if (typeof parsed.maxAge === "number") {
+          // Max-Age is relative to receipt. Convert it once so later reads do
+          // not depend on tough-cookie's mutable lastAccessed timestamp.
+          deleteMarker = parsed.maxAge <= 0
+          parsed.expires = new Date(
+            receivedAt.getTime() + parsed.maxAge * 1_000,
+          )
+          parsed.maxAge = null
+        } else if (
+          parsed.expires instanceof Date &&
+          parsed.expires.getTime() <= receivedAt.getTime()
+        ) {
+          deleteMarker = true
+        }
+
+        const stored = await input.jar.setCookie(parsed, input.url, {
+          ignoreError: true,
+          now: receivedAt,
+        })
+        if (
+          deleteMarker &&
+          stored !== undefined &&
+          stored.domain !== null &&
+          stored.path !== null
+        ) {
+          await input.jar.store.removeCookie(
+            stored.domain,
+            stored.path,
+            stored.key,
+          )
+        }
       } catch {
         // Cookie storage failures must not expose or abort the operation.
       }
