@@ -1,8 +1,8 @@
 # core 包设计与实现状态
 
-状态：CORE-01 已在 `packages/core` 实现（2026-11-12）：会话恢复、作品库、文件清单与播放地址；作品库完整性验收项 R1 仍未闭合，`count.user` 与全量 sales 的关系需要另行验证。CORE-02 的单 ZIP 下载计划尚未实现，须在 CORE-01 合并后从最新 main 开始；CORE-01 不暴露 `acquisition` 方法、占位模块或下载计划能力。
+状态：CORE-01 已在 `packages/core` 实现（2026-11-12）：会话恢复、作品库、文件清单与播放地址；作品库全量购买读取已按同日读取的第一方前端源码副本对齐，尚待独立复核，完整性验收项 R1 仍未闭合。CORE-02 的单 ZIP 下载计划尚未实现，须在 CORE-01 合并后从最新 main 开始；CORE-01 不暴露 `acquisition` 方法、占位模块或下载计划能力。
 
-本稿沿用此前确认的七个模块，并合入脱敏 HAR 结论与 2026-11-12 的一次受限真实观察。公开接口已冻结为 `packages/core` 的 TypeScript 声明；尚未实现的能力只记录在后续能力表中，不以假接口出现。
+本稿沿用此前确认的七个模块，并合入脱敏 HAR 结论、2026-11-12 的一次受限真实观察与同日公开前端副本核对。公开接口已冻结为 `packages/core` 的 TypeScript 声明；尚未实现的能力只记录在后续能力表中，不以假接口出现。
 
 阅读顺序：先看范围、验证依据和模块划分；接口与运行流程用于调用方式；后续能力与验收要求列在文档后半部分。实际命令与包配置见[开发指南](../development.md)。
 
@@ -18,21 +18,31 @@ core 是供 CLI、播放器插件和其他应用调用的 DLsite 已购音声核
 
 ## 验证依据
 
-下表来自此前的脱敏 HAR 报告及 2026-11-12 的一次受限真实观察。除该次观察外没有重新请求 DLsite；这些是已观察到的样本行为，不是 DLsite 的公开接口保证。
+下表来自此前的脱敏 HAR 报告、2026-11-12 的一次受限真实观察，以及同日对三个公开第一方 JavaScript 副本的只读核对。除这些观察外没有重新请求 DLsite；这些是已观察到的样本行为，不是 DLsite 的公开接口保证。
 
-| 能力         | 已观察到的事实                                                                                                                                                                                                           | 对本设计的约束                                                                      |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| 会话与批次   | 单一 host-only `play_session` 导入隔离 Jar 后，v4 `content/sales` 省略 `last` 返回 200 JSON；works 使用 `application/json` 对象 `{worknos:[...]}`，10 条与 2 条请求的每个 workId 都各返回一次；Set-Cookie 只留在候选内存 | 支持现有 Play 会话导入；使用 10 条 works 批次；不从该观察推断作品库完整性或批次上限 |
-| 作品签名     | v4 `download/sign/url` 返回 `Policy`、`Signature`、`Key-Pair-Id`；签名参数单独用于音频和 `ziptree.json` 都成功                                                                                                           | 统一采用 URL 签名，CDN 请求不附带登录 Cookie                                        |
-| 优化音频     | 样本为 MP3，响应支持 Range，直接由内容域名返回；定向请求读到了 MP3 文件头                                                                                                                                                | 首先支持这条渐进式音频路径，不推广为所有音轨都未加密                                |
-| 文件清单     | 顶层包含 `version`、`workno`、`revision`、`hash`、`updated_at`、`tree`、`playfile`；树节点通过 `hashname` 关联文件信息                                                                                                   | 按实际结构解析，不套用第三方旧版的 `files.optimized` 路径                           |
-| 作品库       | v4 `content/count`、`content/sales`、`content/works` 已观察到；`works` 是 POST，请求体包含 `worknos`；音声类型为 `SOU`                                                                                                   | 使用 v4；读取作品元数据与购买记录分开处理                                           |
-| 不完整元数据 | `sales` 中有部分作品没有对应的 `works` 元数据                                                                                                                                                                            | 不静默丢弃这些购买记录，也不猜测其缺失原因                                          |
-| 原版下载     | 已观察到 `play` → `www` → `download` 的单 ZIP 跳转；`www` 响应会更新 Cookie；最终请求携带 Cookie                                                                                                                         | 下载计划与播放签名采用不同的凭据路径；留给 CORE-02                                  |
+| 能力         | 已观察到的事实                                                                                                                                                                                                                     | 对本设计的约束                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 会话与批次   | 单一 host-only `play_session` 导入隔离 Jar 后，v4 `content/sales`（该次请求省略 `last`）返回 200 JSON；works 使用 `application/json` 对象 `{worknos:[...]}`，10 条与 2 条请求的每个 workId 都各返回一次；Set-Cookie 只留在候选内存 | 支持现有 Play 会话导入；使用 10 条 works 批次；不从该观察推断作品库完整性或批次上限 |
+| 作品签名     | v4 `download/sign/url` 返回 `Policy`、`Signature`、`Key-Pair-Id`；签名参数单独用于音频和 `ziptree.json` 都成功                                                                                                                     | 统一采用 URL 签名，CDN 请求不附带登录 Cookie                                        |
+| 优化音频     | 样本为 MP3，响应支持 Range，直接由内容域名返回；定向请求读到了 MP3 文件头                                                                                                                                                          | 首先支持这条渐进式音频路径，不推广为所有音轨都未加密                                |
+| 文件清单     | 顶层包含 `version`、`workno`、`revision`、`hash`、`updated_at`、`tree`、`playfile`；树节点通过 `hashname` 关联文件信息                                                                                                             | 按实际结构解析，不套用第三方旧版的 `files.optimized` 路径                           |
+| 作品库       | v4 `content/count`、`content/sales`、`content/works` 已观察到；`works` 是 POST，请求体包含 `worknos`；音声类型为 `SOU`                                                                                                             | 使用 v4；读取作品元数据与购买记录分开处理                                           |
+| 不完整元数据 | `sales` 中有部分作品没有对应的 `works` 元数据                                                                                                                                                                                      | 不静默丢弃这些购买记录，也不猜测其缺失原因                                          |
+| 原版下载     | 已观察到 `play` → `www` → `download` 的单 ZIP 跳转；`www` 响应会更新 Cookie；最终请求携带 Cookie                                                                                                                                   | 下载计划与播放签名采用不同的凭据路径；留给 CORE-02                                  |
 
-2026-11-12 的观察只证明现有 Play 态可用于该次 v4 调用，以及 10 条和 2 条 works 请求被完整处理；**不证明省略 `last` 的 sales 为完整作品库**，也不证明批次上限、增量 `last`、主站 Cookie 登录、密码登录或其他媒体。工具退出码 4 / `PASS_CANDIDATE` 只表示候选输入标记下的完整匹配，不替代上述边界。
+2026-11-12 另直接读取了当前公开前端副本，用于核对全量购买读取流程。读取时未发送 Cookie 或 Authorization，不跟随跳转、不重试，不执行脚本，也不加载 import 或 source map；没有调用业务 API：
 
-库完整性目前采用保守门槛：`library.list` 以 v4 `content/count` 的 `user` 与本次 `content/sales` 数组长度相等作为完整性条件；不一致时抛出 `IncompleteLibrary`，不返回部分快照。`content/count` 也以省略 `last` 的全量形态请求；该请求形态和 `count.user` 是否精确等于全量 sales 记录数均未独立实测。两者相等不能被当作“已证明全量”的证据：它只能拒绝明显不一致的响应；若语义不同，仍可能误接受或在不一致时失败。该验收项保持未闭合，需另行验证后再决定是否调整。
+| 资源                                                                                            | 字节   | SHA-256                                                            |
+| ----------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------ |
+| [manifest-325d7928.js](https://play.dlsite.com/assets/manifest-325d7928.js)                     | 145538 | `7ec0f46b38f4bed35544b879b03440543f501643d8678f51096ffb4c7b89d973` |
+| [sync-resources.BZB8s2l4.chunk.js](https://play.dlsite.com/js/sync-resources.BZB8s2l4.chunk.js) | 5458   | `59553ec2eed6727101e671b0eeb76f4d2a1a62028d418a73887efb5708cd76f2` |
+| [setting.X95aRzid.chunk.js](https://play.dlsite.com/js/setting.X95aRzid.chunk.js)               | 1487   | `b43a490c48b6edd6b06df7e681dd2a8c217f256de0d3d9168dac2a7438dae742` |
+
+从这些副本自行归纳的当前调用链是：library 同步设置的 `lastSynchronizedTime` 默认为 `0`，强制重建也取 `0`；同步入口把它换算为整数秒后，count 与 sales 请求包装都显式传入同一个 `last` 查询值，因此全量购买读取使用 `last=0`，源码不能证明省略参数与 `0` 等价。流程先请求 v4 `content/count`；`count.user > 0` 时才读取一次 v4 `content/sales`，用返回的 workno 建立购买日期映射，再按 count 的 `page_limit` 分批 POST v4 `content/works`，并按 workId 关联元数据。该流程没有把 `count.user` 与 sales 数组长度相等作为完成条件，`count.user` 只用于购买分支开关和进度上限；`production > 0` 是另一条分页 `content/products` 分支，不属于本包的已购记录范围。
+
+2026-11-12 的真实观察只证明现有 Play 态可用于该次 v4 调用，以及 10 条和 2 条 works 请求被完整处理；该次 sales 请求省略了 `last`，也未请求 count，因此没有实测 `last=0` 的 core 路径。第一方源码副本支持当前客户端的全量购买读取语义，但不构成服务端永久行为保证，也不证明批次上限、增量 `last`、主站 Cookie 登录、密码登录或其他媒体。工具退出码 4 / `PASS_CANDIDATE` 只表示候选输入标记下的完整匹配，不替代上述边界。
+
+`library.list` 已按上述第一方流程对齐：count 与 sales 显式使用 `last=0`；`count.user == 0` 时不请求 sales，返回空购买快照；`count.user > 0` 时只请求一次 sales，并按 sales 返回的全部 workno 分批请求 works。count 不作为数组截断或长度校验条件；count 与 sales 长度不一致时仍处理 sales 返回的全部购买记录。sales 结构错误、任一 works 批次失败、会话替换或取消都会使整次 list 失败，不返回半份快照。快照由多次请求组合而成，不是跨请求的原子视图。该对齐尚待独立复核，R1 验收项保持未闭合。
 
 业务请求涉及 `play.dlsite.com`、`www.dlsite.com`；签名内容请求涉及 `play.dl.dlsite.com`；已观察到的原版文件目标为 `download.dlsite.com`。每条流程只接受预期的 HTTPS 服务目标，并限制到该流程的已知 API path；CDN 只能访问当前 ResourceContext 的 grant 基址前缀。已知登录跳转在发送后续 Cookie 前分类；不把任意同 host 路径当作可携带凭据的目标。认证错误按请求上下文分类：只有 Play 会话请求的 401/登录跳转会使 Play 会话失效；签名 CDN 或匿名请求的 401 保留为对应 HTTP 错误，不影响 Play 登录态。
 
@@ -83,7 +93,7 @@ createClient（组装共享上下文）
 | `client.auth.restore`       | `SessionSnapshot`、可选取消信号                    | 恢复到独立候选 Jar 并重新校验；成功后替换当前会话，不相信快照里的旧有效状态                       |
 | `client.auth.export`        | 无                                                 | `Promise<SessionSnapshot>`，只含版本与 Cookie 作用域                                              |
 | `client.auth.validate`      | 可选取消信号                                       | 校验当前会话；明确失效时抛出 `AuthRequired`                                                       |
-| `client.library.list`       | 语言、作品类型筛选、可选取消信号                   | `LibrarySnapshot`；默认筛选 `SOU`，完整性门槛不满足时抛出 `IncompleteLibrary`                     |
+| `client.library.list`       | 语言、作品类型筛选、可选取消信号                   | `LibrarySnapshot`；默认筛选 `SOU`，按 `last=0` 读取全量购买记录                                   |
 | `client.manifest.get`       | workId、可选 `refreshAccess`、可选取消信号         | `WorkManifest`；需要更新资源上下文时可同时重新申请 Grant                                          |
 | `client.playback.resolve`   | 已选 Track、可选 `refreshAccess`、可选取消信号     | `MediaSource`；`refreshAccess` 用于调用方发现地址失效后显式换签名                                 |
 | `client.acquisition.plan`   | CORE-02 计划能力，当前不存在于公开 Client          | CORE-01 不暴露该方法、占位模块或下载计划类型                                                      |
@@ -95,7 +105,7 @@ createClient（组装共享上下文）
 | `Session`         | 固定绝对过期时间的 CookieStore、会话状态及会话代次                       | 内部状态，由 auth 管理；无会话、未知、有效和失效需要区分                 |
 | `SessionSnapshot` | 格式版本、保留 Cookie 作用域及 Jar 实际绝对过期时间                      | 属于登录凭据；Max-Age 不因导出重新计时；不含 Grant、作品清单或密码       |
 | `Grant`           | workId、baseUrl、原样签名参数、expiresAt                                 | 内部短期能力；按当前会话代次与 workId 隔离                               |
-| `LibrarySnapshot` | 匹配筛选的作品、元数据缺失的购买记录、已知非匹配类型的购买记录、逐条诊断 | 一次完整查询的结果；不声称含有可复用的增量游标；完整性门槛见上文         |
+| `LibrarySnapshot` | 匹配筛选的作品、元数据缺失的购买记录、已知非匹配类型的购买记录、逐条诊断 | 一次全量购买读取的结果；不是跨请求原子快照；不声称含有可复用的增量游标   |
 | `ResourceContext` | workId、无签名的资源基址、清单 revision 与 hash                          | 表示一次清单读取所对应的资源版本；不包含 Grant 或签名参数                |
 | `WorkManifest`    | 资源上下文、完整文件树、未知字段、原始媒体对象、音轨、字幕和版本候选     | 不保存签名 URL；调用方可以按原树自行选择                                 |
 | `PlayfileEntry`   | 固定媒体字段、typed optimized、原始 `media` 对象、未知顶层字段           | `media` 保留 audio/text/image/pdf 的嵌套未知事实；未知媒体形态留在 extra |
@@ -121,13 +131,13 @@ library、manifest、playback、acquisition 的每次业务操作，以及对当
 
 ### 读取作品库
 
-1. 请求 v4 count 和 sales；若 `count.user` 与 sales 数组长度不一致，抛出 `IncompleteLibrary`。取得购买记录后按 10 条分批请求 v4 works，尾批自然短于 10 条。
-2. 保留 workId 和购买时间，将返回的元数据按 workId 关联，不能依赖两个响应数组的位置相同。
+1. 显式以 `last=0` 请求 v4 count；`count.user == 0` 时直接返回空购买快照，不请求 sales。`count.user > 0` 时以同一个 `last=0` 请求一次 v4 sales，取得购买记录后按 10 条分批请求 v4 works，尾批自然短于 10 条。
+2. 保留 workId 和购买时间，将返回的元数据按 workId 关联，不能依赖两个响应数组的位置相同。count 只决定是否进入购买分支，不用作数组截断或长度校验。
 3. 默认只把已确认 `work_type: SOU` 的正常条目放进作品列表。已知其他类型放在 `otherPurchases`；类型或元数据缺失的购买记录单独返回，不当作非音声而丢弃。
 4. 元数据语言优先用调用方选择的语言，回退到 `ja_JP`、`en_US` 或实际存在的名称，同时保留原始多语言名称。没有名称时保留 workId 并报告问题。
-5. 单条数据异常返回对应诊断，其余有效条目仍可使用；购买记录整体结构错误、认证失败、count/sales 不一致或任一批次请求失败，则整次 list 失败，不能把半份结果称为完整快照。
+5. 单条数据异常返回对应诊断，其余有效条目仍可使用；购买记录整体结构错误、认证失败或任一批次请求失败，则整次 list 失败，不能把半份结果称为完整快照。
 
-CORE-01 只提供完整查询，不使用尚未确认语义的 `last` 生成水位。固定使用 10 条 works 批次；不把 count 中的 `page_limit` 或旧版客户端的常数当成批量上限。`count.user` 与全量 sales 记录数相等是当前的保守门槛，其 v4 语义尚未独立验证；相等不代表已验证完整，只表示未触发这一门槛，R1 仍为未闭合验收项。
+CORE-01 只提供全量购买查询：count 和 sales 显式带 `last=0`，一次 sales 后完成全部 works 批次；不使用尚未确认语义的增量 `last` 生成水位。固定使用 10 条 works 批次；不把 count 中的 `page_limit` 或旧版客户端的常数当成批量上限。快照不是跨请求原子视图；R1 的第一方流程依据已定位，仍待独立复核后才能闭合。
 
 ### 读取清单与生成播放地址
 
@@ -182,7 +192,6 @@ transport 的实现策略为：Client 内按 host 串行，令牌桶容量 1、�
 | `NotEntitled` / `NotFound` | 作品接口明确表示无权限或作品不存在                                                        | 不根据 CDN 403 或元数据缺失推断                                          |
 | `GrantExpired`             | 签名响应已成功解析，但取得的 Grant 在使用前已过期                                         | 不包裹获取签名时的取消、认证、限流、网络或响应校验错误                   |
 | `UnsupportedDelivery`      | 无可用优化音频、明确加密标记或未支持的下载交付形态                                        | 不转入其他交付流程掩盖失败                                               |
-| `IncompleteLibrary`        | `count.user` 与 sales 数组长度不一致，无法证明作品库完整                                  | 整次 list 失败，不返回部分快照；不猜测差异原因                           |
 | `InvalidInput`             | Cookie、快照或配置输入不符合公开契约                                                      | 不发起网络请求，不回显输入值                                             |
 
 HTTP 状态与响应结构分别校验：HTML 登录页不能因返回 200 就当作有效 JSON，CDN 的 403 也不等同于账号登录失效。单条作品或文件解析问题通过结果中的诊断表达，不能吞掉整次请求失败。
@@ -198,7 +207,7 @@ CORE-01 的两项实施前证据已由 2026-11-12 的受限真实观察有限满
 - **会话恢复路径**：单一 host-only `play_session` 导入隔离候选 Jar 后，v4 `content/sales` 返回 200 JSON；不依赖主站重新登录。只证明该输入可用于该次调用，不证明主站 Cookie 自动换取 Play 会话。
 - **works 批次**：使用 `application/json` 对象 `{worknos:[...]}` 的 10 条主批与 2 条短批均完整返回请求的每个 workId。实现固定 10 条分批并自然包含尾批；不把 `page_limit` 或第三方旧常数当作上限，也不证明更大批次可用。
 
-`library.list` 的完整性仍受未验证协议事实限制：`count.user` 是否精确等于全量 sales 记录数尚未独立验证。当前以两者相等作为保守门槛，不一致时抛出 `IncompleteLibrary`；不返回半份结果，也不声称省略 `last` 的 sales 一定完整。
+全量购买读取的协议依据已在同日通过公开第一方前端副本定位：初始与强制全量流程均显式使用 `last=0`，count 决定是否进入购买分支，sales 只读取一次，随后完成全部 works 批次；没有 count 与 sales 长度相等的完成断言。实现、合成测试与文档已按此流程对齐，尚待独立复核。该依据不证明服务端永久行为，也没有替代一次真实 `last=0` 路径的 smoke；R1 保持未闭合。
 
 CORE-01 不定义以下能力的假接口或假数据：
 
@@ -222,7 +231,7 @@ CORE-01 不定义以下能力的假接口或假数据：
 | 会话恢复   | 正常导入和恢复、过期 Cookie、每跳 Set-Cookie 更新、Max-Age 绝对期限、删除标记不复活、失效后可重新恢复、有效 Play 会话无需主站初始化                                                               |
 | 会话替换   | 候选 Jar 与当前 Jar 隔离、恢复失败或取消保留原会话、替换串行执行、多批查询中切换账号终止旧操作、迟到响应不能修改新会话或返回旧结果                                                                |
 | HTTP       | Domain/Path/Secure 匹配、签名请求不带登录 Cookie、同 host 路径限制、跳转到未知目标、重定向循环、排队时取消不提前释放尾链、排队后按当前 Jar 选 Cookie、超时、429/503 的退避边界、POST 不被自动重放 |
-| 作品库     | 空库、多批次、响应顺序不同、元数据缺失、单条异常、多语言回退、某批请求失败或 count/sales 不一致不能产出完整快照                                                                                   |
+| 作品库     | 空库（`count.user=0` 不请求 sales）、多批次、响应顺序不同、元数据缺失、单条异常、多语言回退、count 与 sales 不等时处理全部购买记录、某批请求失败不能产出完整快照                                  |
 | 清单       | 实际 tree/playfile 关联、未知字段、缺少映射、没有 optimized、加密标记、多格式与多版本、字幕歧义、不改变原树事实                                                                                   |
 | 签名缓存   | 到期前后、60 秒刷新阈值与实际有效期分开、30 秒有效的新 Grant 可用、不因阈值循环申请、同作品并发合并、不同作品或会话隔离、单个等待者取消、预取消不启动共享申请                                     |
 | 签名错误   | CDN 403 只刷新重试一次，刷新时的取消、会话切换、认证、限流、网络和响应校验失败保留原分类                                                                                                          |

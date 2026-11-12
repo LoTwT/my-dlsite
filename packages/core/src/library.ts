@@ -1,6 +1,6 @@
 import * as v from "valibot"
 import { type Auth, combineSignals } from "./auth.js"
-import { IncompleteLibrary, UnexpectedResponse } from "./errors.js"
+import { UnexpectedResponse } from "./errors.js"
 import { exactPath } from "./internal/url.js"
 import {
   WORKS_BATCH_SIZE,
@@ -16,8 +16,11 @@ import {
 import type { Transport } from "./transport.js"
 
 const PLAY_HOST = "play.dlsite.com"
+const FULL_READ_LAST = "0"
 const COUNT_URL = new URL("/api/v4/content/count", "https://play.dlsite.com")
+COUNT_URL.searchParams.set("last", FULL_READ_LAST)
 const SALES_URL = new URL("/api/v4/content/sales", "https://play.dlsite.com")
+SALES_URL.searchParams.set("last", FULL_READ_LAST)
 const WORKS_URL = new URL("/api/v4/content/works", "https://play.dlsite.com")
 const DEFAULT_WORK_TYPES = ["SOU"]
 
@@ -64,48 +67,42 @@ export class Library implements LibraryApi {
       ) {
         throw new UnexpectedResponse("library.count", "count_shape")
       }
-      const expectedPurchases = parsedCount.output.user
-
-      const sales = await this.transport.requestJson({
-        method: "GET",
-        url: SALES_URL,
-        endpoint: "library.sales",
-        allowedHosts: [PLAY_HOST],
-        allowedPath: exactPath(SALES_URL.pathname),
-        authContext: "play-session",
-        credentials: "session",
-        jar: context.jar,
-        ...(signal === undefined ? {} : { signal }),
-      })
-      this.auth.assertCurrent(context)
-
-      const parsedSales = v.safeParse(salesSchema, sales)
-      if (!parsedSales.success) {
-        throw new UnexpectedResponse("library.sales", "sales_shape")
-      }
-      if (parsedSales.output.length !== expectedPurchases) {
-        throw new IncompleteLibrary(
-          expectedPurchases,
-          parsedSales.output.length,
-        )
-      }
-
       const purchases: PurchaseRecord[] = []
       const seenPurchaseIds = new Set<string>()
-      for (const record of parsedSales.output) {
-        const purchase = readPurchase(record, diagnostics)
-        if (purchase === null) continue
-        if (seenPurchaseIds.has(purchase.workId)) {
-          diagnostics.push({
-            code: "duplicate_purchase_record",
-            message:
-              "Multiple purchase records reference the same work; the first is kept.",
-            workId: purchase.workId,
-          })
-          continue
+      if (parsedCount.output.user > 0) {
+        const sales = await this.transport.requestJson({
+          method: "GET",
+          url: SALES_URL,
+          endpoint: "library.sales",
+          allowedHosts: [PLAY_HOST],
+          allowedPath: exactPath(SALES_URL.pathname),
+          authContext: "play-session",
+          credentials: "session",
+          jar: context.jar,
+          ...(signal === undefined ? {} : { signal }),
+        })
+        this.auth.assertCurrent(context)
+
+        const parsedSales = v.safeParse(salesSchema, sales)
+        if (!parsedSales.success) {
+          throw new UnexpectedResponse("library.sales", "sales_shape")
         }
-        seenPurchaseIds.add(purchase.workId)
-        purchases.push(purchase)
+
+        for (const record of parsedSales.output) {
+          const purchase = readPurchase(record, diagnostics)
+          if (purchase === null) continue
+          if (seenPurchaseIds.has(purchase.workId)) {
+            diagnostics.push({
+              code: "duplicate_purchase_record",
+              message:
+                "Multiple purchase records reference the same work; the first is kept.",
+              workId: purchase.workId,
+            })
+            continue
+          }
+          seenPurchaseIds.add(purchase.workId)
+          purchases.push(purchase)
+        }
       }
 
       const workIds = [...seenPurchaseIds]

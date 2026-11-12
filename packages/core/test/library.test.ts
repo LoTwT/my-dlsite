@@ -4,7 +4,6 @@ import {
   Aborted,
   AuthRequired,
   HttpError,
-  IncompleteLibrary,
   SessionChanged,
   UnexpectedResponse,
 } from "../src/errors.js"
@@ -123,6 +122,7 @@ describe("library", () => {
     const harness = await withSession(
       libraryHandler({ sales: salesResponse(ids) }),
     )
+    harness.server.calls.length = 0
     const snapshot = await harness.library.list()
 
     expect(snapshot.works).toHaveLength(12)
@@ -142,14 +142,16 @@ describe("library", () => {
       "Content-Type": "application/json; charset=utf-8",
     })
 
-    const countCall = harness.server.calls.find((call) =>
+    const countCalls = harness.server.calls.filter((call) =>
       call.url.pathname.endsWith("/count"),
     )
-    const salesCall = harness.server.calls.find((call) =>
+    const salesCalls = harness.server.calls.filter((call) =>
       call.url.pathname.endsWith("/sales"),
     )
-    expect(countCall?.url.search).toBe("")
-    expect(salesCall?.url.search).toBe("")
+    expect(countCalls).toHaveLength(1)
+    expect(salesCalls).toHaveLength(1)
+    expect(countCalls[0]?.url.search).toBe("?last=0")
+    expect(salesCalls[0]?.url.search).toBe("?last=0")
     expect(snapshot.works.map((work) => work.metadata.workId)).toEqual(ids)
   })
 
@@ -308,8 +310,9 @@ describe("library", () => {
     )
   })
 
-  it("returns an empty snapshot without works requests", async () => {
+  it("returns an empty snapshot without sales or works requests when count reports no purchases", async () => {
     const harness = await withSession(libraryHandler({ sales: [] }))
+    harness.server.calls.length = 0
     const snapshot = await harness.library.list()
     expect(snapshot).toEqual({
       works: [],
@@ -318,17 +321,25 @@ describe("library", () => {
       diagnostics: [],
     })
     expect(
+      harness.server.calls.some((call) => call.url.pathname.endsWith("/sales")),
+    ).toBe(false)
+    expect(
       harness.server.calls.some((call) => call.url.pathname.endsWith("/works")),
     ).toBe(false)
   })
 
-  it("fails loudly when count and sales disagree instead of returning a partial library", async () => {
+  it("uses count only as a branch signal, not an array limit", async () => {
+    const ids = workIds(2)
     const harness = await withSession(
-      libraryHandler({ sales: salesResponse(workIds(2)), countUser: 3 }),
+      libraryHandler({ sales: salesResponse(ids), countUser: 1 }),
     )
-    await expect(harness.library.list()).rejects.toBeInstanceOf(
-      IncompleteLibrary,
-    )
+    const snapshot = await harness.library.list()
+    expect(snapshot.works.map((work) => work.metadata.workId)).toEqual(ids)
+    expect(
+      harness.server.calls.filter((call) =>
+        call.url.pathname.endsWith("/works"),
+      ),
+    ).toHaveLength(1)
   })
 
   it("invalidates the Play session on a real Play 401 and stops later requests", async () => {
@@ -347,21 +358,34 @@ describe("library", () => {
     expect(countCalls).toBe(1)
   })
 
-  it("fails on overall structure errors", async () => {
-    let failSales = false
-    const harness = libraryHarness((url, init) => {
-      if (url.pathname === "/api/v4/content/sales") {
-        return failSales
-          ? jsonResponse({ not: "an array" })
-          : jsonResponse(salesResponse([]))
-      }
-      return libraryHandler({ sales: [] })(url, init)
+  it("fails on overall sales structure errors without requesting works", async () => {
+    const harness = libraryHarness((url) => {
+      if (url.pathname === "/api/v4/content/sales")
+        return jsonResponse(salesResponse([]))
+      return new Response("", { status: 404 })
     })
     await harness.auth.importCookies([playSessionCookie()])
-    failSales = true
+    harness.server.calls.length = 0
+    harness.server.setHandler((url) => {
+      if (url.pathname === "/api/v4/content/count") {
+        return jsonResponse({
+          user: 1,
+          production: 0,
+          page_limit: 1,
+          concurrency: 1,
+        })
+      }
+      if (url.pathname === "/api/v4/content/sales") {
+        return jsonResponse({ not: "an array" })
+      }
+      return new Response("", { status: 404 })
+    })
     await expect(harness.library.list()).rejects.toBeInstanceOf(
       UnexpectedResponse,
     )
+    expect(
+      harness.server.calls.some((call) => call.url.pathname.endsWith("/works")),
+    ).toBe(false)
   })
 
   it("does not return a partial snapshot when the session changes during works batches", async () => {

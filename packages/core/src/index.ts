@@ -6,7 +6,6 @@ export {
   CoreError,
   GrantExpired,
   HttpError,
-  IncompleteLibrary,
   InvalidInput,
   NotEntitled,
   NotFound,

@@ -7,6 +7,8 @@ import {
   playSessionCookie,
   salesResponse,
   signResponse,
+  workResponse,
+  worksResponse,
 } from "./helpers.js"
 
 const workId = "RJ123456"
@@ -180,21 +182,26 @@ describe("manifest", () => {
   it("keeps the Play session valid after a CDN 401 and allows later Play requests", async () => {
     let countCalls = 0
     let salesCalls = 0
+    let worksCalls = 0
     let signCalls = 0
     let ziptreeCalls = 0
     const harness = createHarness((url) => {
       if (url.pathname === "/api/v4/content/sales") {
         salesCalls += 1
-        return jsonResponse(salesResponse([]))
+        return jsonResponse(salesResponse([workId]))
       }
       if (url.pathname === "/api/v4/content/count") {
         countCalls += 1
         return jsonResponse({
-          user: 0,
+          user: 1,
           production: 0,
           page_limit: 1,
           concurrency: 1,
         })
+      }
+      if (url.pathname === "/api/v4/content/works") {
+        worksCalls += 1
+        return jsonResponse(worksResponse([workResponse(workId)]))
       }
       if (url.pathname === "/api/v4/download/sign/url") {
         signCalls += 1
@@ -207,8 +214,10 @@ describe("manifest", () => {
       return new Response("", { status: 404 })
     })
     await harness.client.auth.importCookies([playSessionCookie()])
+    harness.server.calls.length = 0
     countCalls = 0
     salesCalls = 0
+    worksCalls = 0
     signCalls = 0
     ziptreeCalls = 0
 
@@ -217,11 +226,21 @@ describe("manifest", () => {
       status: 401,
     })
     const library = await harness.client.library.list()
-    expect(library.works).toHaveLength(0)
+    expect(library.works).toHaveLength(1)
+    expect(library.works[0]?.purchase.workId).toBe(workId)
     expect(signCalls).toBe(1)
     expect(ziptreeCalls).toBe(1)
     expect(countCalls).toBe(1)
     expect(salesCalls).toBe(1)
+    expect(worksCalls).toBe(1)
+    expect(
+      harness.server.calls.find((call) => call.url.pathname.endsWith("/count"))
+        ?.url.search,
+    ).toBe("?last=0")
+    expect(
+      harness.server.calls.find((call) => call.url.pathname.endsWith("/sales"))
+        ?.url.search,
+    ).toBe("?last=0")
   })
 
   it("requests ziptree with signature parameters only and no login cookies", async () => {

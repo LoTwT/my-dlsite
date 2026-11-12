@@ -138,17 +138,3 @@ export class InvalidInput extends CoreError {
     this.diagnostic = diagnostic
   }
 }
-
-export class IncompleteLibrary extends CoreError {
-  readonly expected: number
-  readonly received: number
-
-  constructor(expected: number, received: number) {
-    super(
-      "IncompleteLibrary",
-      `The library response is incomplete (expected ${expected}, received ${received}).`,
-    )
-    this.expected = expected
-    this.received = received
-  }
-}
