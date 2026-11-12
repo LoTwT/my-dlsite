@@ -1,6 +1,18 @@
 export type TransportFailure = "network" | "timeout"
 export type ManifestMismatch = "base-url" | "revision" | "hash" | "unknown"
 
+const CANONICAL_WORK_ID = /^[A-Z]{2}\d{4,12}$/
+const REDACTED_WORK_ID = "[redacted]"
+
+// Work IDs are opaque caller input. Error context keeps only the observed
+// canonical product-ID shape so serializing an error cannot echo URLs or other
+// unverified values; other code still accepts any non-empty string.
+function errorWorkId(workId: string | undefined): string | undefined {
+  return workId !== undefined && CANONICAL_WORK_ID.test(workId)
+    ? workId
+    : undefined
+}
+
 export class CoreError extends Error {
   readonly code: string
 
@@ -44,7 +56,7 @@ export class StaleManifest extends CoreError {
       "StaleManifest",
       `The track does not match the current manifest (${reason}).`,
     )
-    this.workId = workId
+    this.workId = errorWorkId(workId) ?? REDACTED_WORK_ID
     this.reason = reason
   }
 }
@@ -97,7 +109,7 @@ export class NotEntitled extends CoreError {
 
   constructor(workId?: string) {
     super("NotEntitled", "The account is not entitled to this work.")
-    this.workId = workId
+    this.workId = errorWorkId(workId)
   }
 }
 
@@ -106,7 +118,7 @@ export class NotFound extends CoreError {
 
   constructor(workId?: string) {
     super("NotFound", "The requested work was not found.")
-    this.workId = workId
+    this.workId = errorWorkId(workId)
   }
 }
 
@@ -115,7 +127,7 @@ export class GrantExpired extends CoreError {
 
   constructor(workId: string) {
     super("GrantExpired", "The access grant has already expired.")
-    this.workId = workId
+    this.workId = errorWorkId(workId) ?? REDACTED_WORK_ID
   }
 }
 
@@ -125,7 +137,7 @@ export class UnsupportedDelivery extends CoreError {
 
   constructor(reason: string, workId?: string) {
     super("UnsupportedDelivery", `This delivery is not supported (${reason}).`)
-    this.workId = workId
+    this.workId = errorWorkId(workId)
     this.reason = reason
   }
 }

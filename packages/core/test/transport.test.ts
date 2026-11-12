@@ -1,5 +1,5 @@
 import { Cookie, CookieJar } from "tough-cookie"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { Aborted, AuthRequired, HttpError, RateLimited } from "../src/errors.js"
 import { exactPath, pathPrefix } from "../src/internal/url.js"
 import { Transport } from "../src/transport.js"
@@ -129,6 +129,64 @@ describe("transport", () => {
     expect(firstHeaders["Cookie"]).toContain("play_session=")
     expect(secondHeaders["Cookie"]).toContain("rotated=YES")
     expect(clock.now()).toBeGreaterThanOrEqual(1_000)
+  })
+
+  it("stamps Set-Cookie Max-Age at receipt before redirect body cleanup", async () => {
+    const start = 1_700_000_000_000
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(start)
+    try {
+      const clock = createClock(start)
+      const jar = new CookieJar()
+      const downloadUrl = new URL(
+        "https://download.dlsite.com/file/RJ000001.zip/",
+      )
+      const body = new ReadableStream({
+        start() {
+          // Keep the stream open so cleanup controls the timestamp.
+        },
+        cancel() {
+          clock.advance(5_000)
+          vi.setSystemTime(clock.now())
+        },
+      })
+      const server = createFakeServer(
+        () =>
+          new Response(body, {
+            status: 302,
+            headers: {
+              "Location": downloadUrl.href,
+              "set-cookie":
+                "late=COOKIE; Max-Age=1; Domain=.dlsite.com; Path=/; Secure",
+            },
+          }),
+      )
+      const transport = createTransport(server, clock)
+      const transaction = transport.createTransaction()
+
+      await expect(
+        transaction.requestHop({
+          url: new URL(
+            "https://play.dlsite.com/api/v3/download?workno=RJ000001&method=zip",
+          ),
+          endpoint: "acquisition.plan",
+          authContext: "play-session",
+          credentials: "session",
+          jar,
+        }),
+      ).resolves.toMatchObject({ type: "redirect", url: downloadUrl })
+      expect(clock.now()).toBe(start + 5_000)
+
+      const late = (await jar.store.getAllCookies()).find(
+        (cookie) => cookie.key === "late",
+      )
+      expect(late?.expires).toBeInstanceOf(Date)
+      if (!(late?.expires instanceof Date)) throw new Error("missing expiry")
+      expect(late.expires.getTime()).toBe(start + 1_000)
+      expect(await jar.getCookieString(downloadUrl)).toBe("")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("keeps the host queue serial when a queued request is canceled", async () => {
