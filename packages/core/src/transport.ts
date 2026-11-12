@@ -9,6 +9,7 @@ import {
 } from "./errors.js"
 import { type Clock, abortPromise, systemClock } from "./internal/clock.js"
 import {
+  type AllowedPath,
   assertAllowedUrl,
   isKnownLoginUrl,
   parseRetryAfter,
@@ -33,6 +34,7 @@ export interface TransportRequest {
   url: URL
   endpoint: string
   allowedHosts: readonly string[]
+  allowedPath: AllowedPath
   credentials: "session" | "none"
   jar?: CookieJar
   body?: {
@@ -115,10 +117,11 @@ class HostGate {
   ): Promise<T> {
     const state = this.gates.get(host) ?? { tail: Promise.resolve(), nextAt: 0 }
     const previous = state.tail
-    let release: (() => void) | undefined
-    state.tail = new Promise<void>((resolve) => {
-      release = resolve
+    let releaseCurrent: (() => void) | undefined
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve
     })
+    state.tail = current
     this.gates.set(host, state)
 
     try {
@@ -138,7 +141,10 @@ class HostGate {
       state.nextAt = this.clock.now() + this.rateLimitMs
       return await task()
     } finally {
-      release?.()
+      void previous.then(
+        () => releaseCurrent?.(),
+        () => releaseCurrent?.(),
+      )
     }
   }
 }
@@ -165,7 +171,12 @@ export class Transport {
   }
 
   async requestJson(request: TransportRequest): Promise<unknown> {
-    assertAllowedUrl(request.url, request.allowedHosts, request.endpoint)
+    assertAllowedUrl(
+      request.url,
+      request.allowedHosts,
+      request.allowedPath,
+      request.endpoint,
+    )
     const transaction = new Transaction(
       request.signal,
       this.clock,
@@ -177,38 +188,24 @@ export class Transport {
     let retries = 0
 
     for (;;) {
-      const cookie =
-        request.credentials === "session" && request.jar !== undefined
-          ? await request.jar.getCookieString(currentUrl)
-          : ""
-      const headers: Record<string, string> = {
-        "Accept": "application/json",
-        "User-Agent": this.userAgent,
-        "Referer": "https://play.dlsite.com/",
-      }
-      if (cookie.length > 0) headers.Cookie = cookie
-      if (request.method === "POST") {
-        headers.Origin = "https://play.dlsite.com"
-        if (request.body !== undefined) {
-          headers["Content-Type"] = request.body.contentType
-        }
-      }
-
       const hop = await this.hostGate.run(
         currentUrl.hostname.toLowerCase(),
-        async () =>
-          this.sendHop({
+        async () => {
+          const headers = await this.headersFor(request, currentUrl)
+          return this.sendHop({
             url: currentUrl,
             method: request.method,
             body: request.body,
             headers,
             endpoint: request.endpoint,
             allowedHosts: request.allowedHosts,
+            allowedPath: request.allowedPath,
             credentials: request.credentials,
             jar: request.jar,
             transaction,
             now: this.clock.now(),
-          }),
+          })
+        },
         transaction.signal,
         () => transaction.abortError(),
       )
@@ -240,6 +237,29 @@ export class Transport {
     }
   }
 
+  private async headersFor(
+    request: TransportRequest,
+    url: URL,
+  ): Promise<Record<string, string>> {
+    const cookie =
+      request.credentials === "session" && request.jar !== undefined
+        ? await request.jar.getCookieString(url)
+        : ""
+    const headers: Record<string, string> = {
+      "Accept": "application/json",
+      "User-Agent": this.userAgent,
+      "Referer": "https://play.dlsite.com/",
+    }
+    if (cookie.length > 0) headers.Cookie = cookie
+    if (request.method === "POST") {
+      headers.Origin = "https://play.dlsite.com"
+      if (request.body !== undefined) {
+        headers["Content-Type"] = request.body.contentType
+      }
+    }
+    return headers
+  }
+
   private async sendHop(input: {
     url: URL
     method: "GET" | "POST"
@@ -247,6 +267,7 @@ export class Transport {
     headers: Record<string, string>
     endpoint: string
     allowedHosts: readonly string[]
+    allowedPath: AllowedPath
     credentials: "session" | "none"
     jar: CookieJar | undefined
     transaction: Transaction
@@ -290,7 +311,12 @@ export class Transport {
       if (isKnownLoginUrl(target)) {
         throw new AuthRequired(input.endpoint)
       }
-      assertAllowedUrl(target, input.allowedHosts, input.endpoint)
+      assertAllowedUrl(
+        target,
+        input.allowedHosts,
+        input.allowedPath,
+        input.endpoint,
+      )
       if (input.method !== "GET") {
         throw new UnexpectedResponse(input.endpoint, "post_redirect")
       }

@@ -107,7 +107,7 @@ export function playSessionCookie(
   }
 }
 
-export function policy(expirySeconds: number): string {
+export function policy(expirySeconds: number, marker = ""): string {
   return Buffer.from(
     JSON.stringify({
       Statement: [
@@ -116,8 +116,16 @@ export function policy(expirySeconds: number): string {
           Condition: { DateLessThan: { "AWS:EpochTime": expirySeconds } },
         },
       ],
+      ...(marker.length === 0 ? {} : { marker }),
     }),
   ).toString("base64")
+}
+
+export function cloudFrontPolicy(expirySeconds: number, marker = ""): string {
+  return policy(expirySeconds, marker)
+    .replace(/\+/g, "-")
+    .replace(/=/g, "_")
+    .replace(/\//g, "~")
 }
 
 export function signResponse(workId: string, expirySeconds: number): unknown {

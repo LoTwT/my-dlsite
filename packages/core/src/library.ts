@@ -1,6 +1,7 @@
 import * as v from "valibot"
-import type { Auth } from "./auth.js"
+import { type Auth, combineSignals } from "./auth.js"
 import { IncompleteLibrary, UnexpectedResponse } from "./errors.js"
+import { exactPath } from "./internal/url.js"
 import {
   WORKS_BATCH_SIZE,
   type Diagnostic,
@@ -40,15 +41,17 @@ export class Library implements LibraryApi {
 
   async list(options: LibraryOptions = {}): Promise<LibrarySnapshot> {
     return this.auth.operation(async (context) => {
+      const signal = combineSignals(context.signal, options.signal)
       const diagnostics: Diagnostic[] = []
       const count = await this.transport.requestJson({
         method: "GET",
         url: COUNT_URL,
         endpoint: "library.count",
         allowedHosts: [PLAY_HOST],
+        allowedPath: exactPath(COUNT_URL.pathname),
         credentials: "session",
         jar: context.jar,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(signal === undefined ? {} : { signal }),
       })
       this.auth.assertCurrent(context)
 
@@ -67,9 +70,10 @@ export class Library implements LibraryApi {
         url: SALES_URL,
         endpoint: "library.sales",
         allowedHosts: [PLAY_HOST],
+        allowedPath: exactPath(SALES_URL.pathname),
         credentials: "session",
         jar: context.jar,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(signal === undefined ? {} : { signal }),
       })
       this.auth.assertCurrent(context)
 
@@ -116,13 +120,14 @@ export class Library implements LibraryApi {
           url: WORKS_URL,
           endpoint: "library.works",
           allowedHosts: [PLAY_HOST],
+          allowedPath: exactPath(WORKS_URL.pathname),
           credentials: "session",
           jar: context.jar,
           body: {
             contentType: "application/json; charset=utf-8",
             text: JSON.stringify({ worknos: batch }),
           },
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          ...(signal === undefined ? {} : { signal }),
         })
         this.auth.assertCurrent(context)
 
@@ -188,7 +193,7 @@ export class Library implements LibraryApi {
       }
 
       return { works, missingMetadata, otherPurchases, diagnostics }
-    })
+    }, options)
   }
 }
 

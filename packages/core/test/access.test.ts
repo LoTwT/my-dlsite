@@ -9,6 +9,7 @@ import {
 } from "../src/errors.js"
 import { Transport } from "../src/transport.js"
 import {
+  cloudFrontPolicy,
   createClock,
   createFakeServer,
   jsonResponse,
@@ -76,6 +77,29 @@ describe("access grants", () => {
     expect(headers["Authorization"]).toBeUndefined()
   })
 
+  it("decodes CloudFront policy encoding without changing the signed parameters", async () => {
+    const expiry = 2_000_000_000
+    const encodedPolicy = cloudFrontPolicy(expiry, "þ???")
+    expect(encodedPolicy).toContain("-")
+    expect(encodedPolicy).toContain("_")
+    expect(encodedPolicy).toContain("~")
+    const { access, context, clock } = await accessStack(() => ({
+      url: `https://play.dl.dlsite.com/content/work/doujin/RJ00000000/${workId}/`,
+      params: {
+        "Policy": encodedPolicy,
+        "Signature": "FAKE_SIGNATURE",
+        "Key-Pair-Id": "FAKE_KEY_PAIR",
+      },
+      expires: new Date(expiry * 1_000).toISOString(),
+    }))
+    const grant = await access.getGrant(context, workId, {
+      operation: createAccessOperation(),
+    })
+    expect(grant.expiresAt).toBe(expiry * 1_000)
+    expect(grant.params["Policy"]).toBe(encodedPolicy)
+    expect(grant.expiresAt).toBeGreaterThan(clock.now())
+  })
+
   it("uses the earlier of response expiry and Policy DateLessThan", async () => {
     const { access, context, clock } = await accessStack(() => {
       const early = Math.floor(clock.now() / 1_000) + 60
@@ -116,6 +140,23 @@ describe("access grants", () => {
     })
     expect(noLoop.expiresAt).toBe(refreshed.expiresAt)
     expect(calls).toBe(2)
+  })
+
+  it("does not start a shared request for an already aborted waiter", async () => {
+    const { access, context, server } = await accessStack(() => {
+      throw new Error("sign request must not start")
+    })
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      access.getGrant(context, workId, {
+        operation: createAccessOperation(),
+        signal: controller.signal,
+      }),
+    ).rejects.toBeInstanceOf(Aborted)
+    expect(
+      server.calls.filter((call) => call.url.pathname.endsWith("/sign/url")),
+    ).toHaveLength(0)
   })
 
   it("merges concurrent grant requests and lets one waiter cancel without canceling the other", async () => {

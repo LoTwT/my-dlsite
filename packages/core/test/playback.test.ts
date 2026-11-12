@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { UnexpectedResponse } from "../src/errors.js"
+import { Aborted, UnexpectedResponse } from "../src/errors.js"
 import type { Track } from "../src/model.js"
 import { createHarness } from "./client-helpers.js"
 import {
@@ -11,6 +11,14 @@ import {
 } from "./helpers.js"
 
 const workId = "RJ123456"
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver
+  })
+  return { promise, resolve }
+}
 
 function playbackHandler(
   options: {
@@ -79,6 +87,62 @@ describe("playback", () => {
         call.url.pathname.includes("/optimized/"),
       ),
     ).toBe(false)
+  })
+
+  it("rejects a pre-aborted signal even when the manifest and grant are cached", async () => {
+    const { harness, manifest } = await playbackHarness()
+    const track = manifest.tracks[0]
+    expect(track).toBeDefined()
+    if (track === undefined) return
+    const before = harness.server.calls.length
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      harness.client.playback.resolve(track, { signal: controller.signal }),
+    ).rejects.toBeInstanceOf(Aborted)
+    expect(harness.server.calls.length).toBe(before)
+  })
+
+  it("rechecks the latest manifest after waiting for a refreshed grant", async () => {
+    const sign = deferred<unknown>()
+    const signStarted = deferred<void>()
+    let signCalls = 0
+    let fixture = manifestFixture(workId)
+    const harness = createHarness((url) => {
+      if (url.pathname === "/api/v4/content/sales")
+        return jsonResponse(salesResponse([]))
+      if (url.pathname === "/api/v4/download/sign/url") {
+        signCalls += 1
+        if (signCalls === 1)
+          return jsonResponse(signResponse(workId, 2_000_000_000))
+        signStarted.resolve()
+        return sign.promise.then((value) => jsonResponse(value))
+      }
+      if (url.pathname.endsWith("/ziptree.json")) return jsonResponse(fixture)
+      return new Response("", { status: 404 })
+    })
+    await harness.client.auth.importCookies([playSessionCookie()])
+    const first = await harness.client.manifest.get(workId)
+    const track = first.tracks[0]
+    expect(track).toBeDefined()
+    if (track === undefined) return
+
+    const pending = harness.client.playback.resolve(track, {
+      refreshAccess: true,
+    })
+    await signStarted.promise
+    fixture = {
+      ...manifestFixture(workId),
+      revision: "revision-0002",
+      hash: "hash-0002",
+    }
+    await harness.client.manifest.get(workId)
+    sign.resolve(signResponse(workId, 2_000_000_000))
+
+    await expect(pending).rejects.toMatchObject({
+      code: "StaleManifest",
+      reason: "revision",
+    })
   })
 
   it("rejects a track whose revision or hash differs from the latest manifest", async () => {

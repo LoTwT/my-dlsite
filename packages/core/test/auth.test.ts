@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 import { Auth } from "../src/auth.js"
-import { Aborted, AuthRequired, InvalidInput } from "../src/errors.js"
+import {
+  Aborted,
+  AuthRequired,
+  InvalidInput,
+  UnexpectedResponse,
+} from "../src/errors.js"
 import type { SessionSnapshot } from "../src/model.js"
 import { Transport } from "../src/transport.js"
 import {
@@ -89,6 +94,31 @@ describe("auth", () => {
     expect(snapshot.cookies[0]?.value).toBe("OLD_SESSION")
   })
 
+  it("rejects candidate redirects outside the sales path without sending cookies onward", async () => {
+    let redirect = false
+    let calls = 0
+    const harness = authHarness((url) => {
+      calls += 1
+      if (url.pathname !== salesPath) return new Response("", { status: 404 })
+      if (redirect) {
+        return new Response("", {
+          status: 302,
+          headers: { Location: "/unrelated-path" },
+        })
+      }
+      return jsonResponse(salesResponse([]))
+    })
+    await harness.auth.importCookies([playSessionCookie({ value: "OLD" })])
+    redirect = true
+    calls = 0
+    await expect(
+      harness.auth.importCookies([playSessionCookie({ value: "NEW" })]),
+    ).rejects.toBeInstanceOf(UnexpectedResponse)
+    expect(calls).toBe(1)
+    const snapshot = await harness.auth.export()
+    expect(snapshot.cookies[0]?.value).toBe("OLD")
+  })
+
   it("keeps the old session when candidate validation fails", async () => {
     let fail = false
     const harness = authHarness((url) => {
@@ -136,6 +166,28 @@ describe("auth", () => {
 
     const snapshot = await harness.auth.export()
     expect(snapshot.cookies[0]?.value).toBe("OLD_SESSION")
+  })
+
+  it("exports Max-Age as the Jar's absolute deadline without recharging it", async () => {
+    const harness = authHarness((url) => {
+      if (url.pathname !== salesPath) return new Response("", { status: 404 })
+      return jsonResponse(salesResponse([]), {
+        "set-cookie":
+          "play_session=ROTATED; Max-Age=60; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure; HttpOnly",
+      })
+    })
+    await harness.auth.importCookies([playSessionCookie({ value: "OLD" })])
+    const before = await harness.auth.export()
+    const expires = before.cookies[0]?.expires
+    expect(expires).not.toBeNull()
+    if (expires === null || expires === undefined) return
+    const now = Math.floor(Date.now() / 1_000)
+    expect(expires).toBeGreaterThanOrEqual(now + 55)
+    expect(expires).toBeLessThanOrEqual(now + 61)
+
+    harness.clock.advance(20_000)
+    const after = await harness.auth.export()
+    expect(after.cookies[0]?.expires).toBe(expires)
   })
 
   it("exports and restores only versioned cookie scope", async () => {

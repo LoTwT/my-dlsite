@@ -7,6 +7,7 @@ import {
   SessionChanged,
   UnexpectedResponse,
 } from "./errors.js"
+import { exactPath } from "./internal/url.js"
 import type {
   AuthApi,
   OperationOptions,
@@ -58,9 +59,11 @@ const salesArraySchema = v.array(v.unknown())
 export interface SessionContext {
   readonly generation: number
   readonly jar: CookieJar
+  readonly signal: AbortSignal
 }
 
 interface CurrentSession extends SessionContext {
+  readonly controller: AbortController
   state: "unknown" | "valid" | "invalid"
 }
 
@@ -107,10 +110,10 @@ export class Auth implements AuthApi {
     const session = this.current
     if (session === null) return { version: 1, cookies: [] }
     const cookies = await session.jar.store.getAllCookies()
-    const nowMilliseconds = this.now()
+    this.assertCurrent(session)
     const snapshotCookies: SnapshotCookie[] = []
     for (const cookie of cookies) {
-      const snapshotCookie = toSnapshotCookie(cookie, nowMilliseconds)
+      const snapshotCookie = toSnapshotCookie(cookie)
       if (snapshotCookie !== null) snapshotCookies.push(snapshotCookie)
     }
     return { version: 1, cookies: snapshotCookies }
@@ -118,12 +121,16 @@ export class Auth implements AuthApi {
 
   async validate(options: OperationOptions = {}): Promise<void> {
     await this.operation(async (context) => {
-      await this.probe(context.jar, options.signal)
+      await this.probe(
+        context.jar,
+        combineSignals(context.signal, options.signal),
+      )
+      this.assertCurrent(context)
       const current = this.current
       if (current !== null && current.generation === context.generation) {
         current.state = "valid"
       }
-    })
+    }, options)
   }
 
   beginOperation(): SessionContext {
@@ -131,18 +138,27 @@ export class Auth implements AuthApi {
     if (current === null || current.state === "invalid") {
       throw new AuthRequired()
     }
-    return { generation: current.generation, jar: current.jar }
+    return {
+      generation: current.generation,
+      jar: current.jar,
+      signal: current.signal,
+    }
   }
 
-  async operation<T>(run: (context: SessionContext) => Promise<T>): Promise<T> {
+  async operation<T>(
+    run: (context: SessionContext) => Promise<T>,
+    options: OperationOptions = {},
+  ): Promise<T> {
     const context = this.beginOperation()
     try {
+      throwIfAborted(options.signal)
       const result = await run(context)
       this.assertCurrent(context)
+      throwIfAborted(options.signal)
       return result
     } catch (error) {
+      if (!this.isCurrent(context)) throw new SessionChanged()
       if (error instanceof AuthRequired) {
-        if (!this.isCurrent(context)) throw new SessionChanged()
         this.markInvalid(context)
       }
       throw error
@@ -167,9 +183,18 @@ export class Auth implements AuthApi {
   }
 
   private replace(jar: CookieJar): void {
-    const generation = (this.current?.generation ?? 0) + 1
-    this.current = { generation, jar, state: "valid" }
+    const previous = this.current
+    const generation = (previous?.generation ?? 0) + 1
+    const controller = new AbortController()
+    this.current = {
+      generation,
+      jar,
+      signal: controller.signal,
+      controller,
+      state: "valid",
+    }
     this.onSessionReplaced(generation)
+    previous?.controller.abort()
   }
 
   private async probe(
@@ -181,6 +206,7 @@ export class Auth implements AuthApi {
       url: SALES_URL,
       endpoint: "auth.validate",
       allowedHosts: [PLAY_HOST],
+      allowedPath: exactPath(SALES_URL.pathname),
       credentials: "session",
       jar,
       ...(signal === undefined ? {} : { signal }),
@@ -245,6 +271,17 @@ export class Auth implements AuthApi {
     }
     return jar
   }
+}
+
+export function combineSignals(
+  ...signals: readonly (AbortSignal | undefined)[]
+): AbortSignal | undefined {
+  const present = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined,
+  )
+  if (present.length === 0) return undefined
+  if (present.length === 1) return present[0]
+  return AbortSignal.any(present)
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -369,20 +406,13 @@ function createSnapshotCookie(
   })
 }
 
-function toSnapshotCookie(
-  cookie: Cookie,
-  nowMilliseconds: number,
-): SnapshotCookie | null {
+function toSnapshotCookie(cookie: Cookie): SnapshotCookie | null {
   if (cookie.domain === null || cookie.path === null || cookie.key.length === 0)
     return null
   let expires: number | null = null
-  if (cookie.expires instanceof Date) {
-    expires = Math.floor(cookie.expires.getTime() / 1_000)
-  } else if (
-    typeof cookie.maxAge === "number" &&
-    Number.isFinite(cookie.maxAge)
-  ) {
-    expires = Math.floor((nowMilliseconds + cookie.maxAge * 1_000) / 1_000)
+  const expiryTime = cookie.expiryTime()
+  if (expiryTime !== undefined && Number.isFinite(expiryTime)) {
+    expires = Math.floor(expiryTime / 1_000)
   }
   const sameSiteValue = cookie.sameSite?.toLowerCase()
   const sameSite =

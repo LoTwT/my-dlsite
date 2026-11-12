@@ -1,6 +1,7 @@
 import { Cookie, CookieJar } from "tough-cookie"
 import { describe, expect, it } from "vitest"
 import { Aborted, AuthRequired, HttpError, RateLimited } from "../src/errors.js"
+import { exactPath, pathPrefix } from "../src/internal/url.js"
 import { Transport } from "../src/transport.js"
 import { createClock, createFakeServer, jsonResponse } from "./helpers.js"
 
@@ -47,6 +48,7 @@ describe("transport", () => {
       url: salesUrl,
       endpoint: "test",
       allowedHosts: ["play.dlsite.com"],
+      allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "session",
       jar,
     })
@@ -76,6 +78,7 @@ describe("transport", () => {
       url: cdnUrl,
       endpoint: "manifest.get",
       allowedHosts: ["play.dl.dlsite.com"],
+      allowedPath: pathPrefix("/content/work/doujin/RJ00000000/RJ123456/"),
       credentials: "none",
       jar,
     })
@@ -91,7 +94,7 @@ describe("transport", () => {
         return new Response("", {
           status: 302,
           headers: {
-            "Location": "/api/v4/content/count",
+            "Location": "/api/v4/content/sales",
             "set-cookie": "rotated=YES; Path=/; Secure; HttpOnly",
           },
         })
@@ -107,13 +110,14 @@ describe("transport", () => {
       url: salesUrl,
       endpoint: "test",
       allowedHosts: ["play.dlsite.com"],
+      allowedPath: exactPath("/api/v4/content/sales"),
       credentials: "session",
       jar,
     })
 
     expect(server.calls).toHaveLength(2)
     expect(server.calls[0]?.url.pathname).toBe("/api/v4/content/sales")
-    expect(server.calls[1]?.url.pathname).toBe("/api/v4/content/count")
+    expect(server.calls[1]?.url.pathname).toBe("/api/v4/content/sales")
     const firstHeaders = server.calls[0]?.init.headers as Record<string, string>
     const secondHeaders = server.calls[1]?.init.headers as Record<
       string,
@@ -122,6 +126,113 @@ describe("transport", () => {
     expect(firstHeaders["Cookie"]).toContain("play_session=")
     expect(secondHeaders["Cookie"]).toContain("rotated=YES")
     expect(clock.now()).toBeGreaterThanOrEqual(1_000)
+  })
+
+  it("keeps the host queue serial when a queued request is canceled", async () => {
+    let resolveFirst: ((response: Response) => void) | undefined
+    let firstStartedResolve: (() => void) | undefined
+    const firstStarted = new Promise<void>((resolve) => {
+      firstStartedResolve = resolve
+    })
+    const server = createFakeServer((_url, _init, call) => {
+      if (call === 1) {
+        firstStartedResolve?.()
+        return new Promise<Response>((resolve) => {
+          resolveFirst = resolve
+        })
+      }
+      return jsonResponse({ call })
+    })
+    const transport = createTransport(server, createClock())
+    const first = transport.requestJson({
+      method: "GET",
+      url: salesUrl,
+      endpoint: "test",
+      allowedHosts: ["play.dlsite.com"],
+      allowedPath: exactPath("/api/v4/content/sales"),
+      credentials: "none",
+    })
+    await firstStarted
+
+    const controller = new AbortController()
+    const second = transport.requestJson({
+      method: "GET",
+      url: salesUrl,
+      endpoint: "test",
+      allowedHosts: ["play.dlsite.com"],
+      allowedPath: exactPath("/api/v4/content/sales"),
+      credentials: "none",
+      signal: controller.signal,
+    })
+    const third = transport.requestJson({
+      method: "GET",
+      url: salesUrl,
+      endpoint: "test",
+      allowedHosts: ["play.dlsite.com"],
+      allowedPath: exactPath("/api/v4/content/sales"),
+      credentials: "none",
+    })
+    controller.abort()
+    await expect(second).rejects.toBeInstanceOf(Aborted)
+    expect(server.calls).toHaveLength(1)
+
+    resolveFirst?.(jsonResponse({ ok: true }))
+    await expect(first).resolves.toEqual({ ok: true })
+    await expect(third).resolves.toEqual({ call: 2 })
+    expect(server.calls).toHaveLength(2)
+  })
+
+  it("selects the current cookies after a queued request gets the host slot", async () => {
+    let resolveFirst: ((response: Response) => void) | undefined
+    let firstStartedResolve: (() => void) | undefined
+    const firstStarted = new Promise<void>((resolve) => {
+      firstStartedResolve = resolve
+    })
+    const server = createFakeServer((_url, _init, call) => {
+      if (call === 1) {
+        firstStartedResolve?.()
+        return new Promise<Response>((resolve) => {
+          resolveFirst = resolve
+        })
+      }
+      return jsonResponse([])
+    })
+    const transport = createTransport(server, createClock())
+    const jar = await sessionJar()
+    const first = transport.requestJson({
+      method: "GET",
+      url: salesUrl,
+      endpoint: "test",
+      allowedHosts: ["play.dlsite.com"],
+      allowedPath: exactPath("/api/v4/content/sales"),
+      credentials: "session",
+      jar,
+    })
+    await firstStarted
+    const second = transport.requestJson({
+      method: "GET",
+      url: salesUrl,
+      endpoint: "test",
+      allowedHosts: ["play.dlsite.com"],
+      allowedPath: exactPath("/api/v4/content/sales"),
+      credentials: "session",
+      jar,
+    })
+    resolveFirst?.(
+      jsonResponse([], {
+        "set-cookie": "play_session=ROTATED; Path=/; Secure; HttpOnly",
+      }),
+    )
+    await Promise.all([first, second])
+
+    const firstHeaders = server.calls[0]?.init.headers as Record<string, string>
+    const secondHeaders = server.calls[1]?.init.headers as Record<
+      string,
+      string
+    >
+    expect(firstHeaders["Cookie"]).toContain("FAKE_TRANSPORT_SESSION")
+    expect(secondHeaders["Cookie"]).toContain("play_session=ROTATED")
+    expect(secondHeaders["Cookie"]).not.toContain("FAKE_TRANSPORT_SESSION")
   })
 
   it("blocks redirects to unknown hosts and known login entries", async () => {
@@ -140,6 +251,7 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
       }),
     ).rejects.toMatchObject({
@@ -147,6 +259,29 @@ describe("transport", () => {
       diagnostic: "unexpected_target",
     })
     expect(unknown.calls).toHaveLength(1)
+
+    const outsidePath = createFakeServer(
+      () =>
+        new Response("", {
+          status: 302,
+          headers: { Location: "/unrelated-path" },
+        }),
+    )
+    const outsidePathTransport = createTransport(outsidePath, createClock())
+    await expect(
+      outsidePathTransport.requestJson({
+        method: "GET",
+        url: salesUrl,
+        endpoint: "test",
+        allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
+        credentials: "none",
+      }),
+    ).rejects.toMatchObject({
+      code: "UnexpectedResponse",
+      diagnostic: "unexpected_target",
+    })
+    expect(outsidePath.calls).toHaveLength(1)
 
     const login = createFakeServer(
       () =>
@@ -164,7 +299,9 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
-        credentials: "none",
+        allowedPath: exactPath("/api/v4/content/sales"),
+        credentials: "session",
+        jar: await sessionJar(),
       }),
     ).rejects.toBeInstanceOf(AuthRequired)
     expect(login.calls).toHaveLength(1)
@@ -185,6 +322,7 @@ describe("transport", () => {
         url: new URL("https://play.dlsite.com/api/v4/content/works"),
         endpoint: "library.works",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/works"),
         credentials: "none",
         body: { contentType: "application/json", text: "{}" },
       }),
@@ -213,6 +351,7 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
       }),
     ).resolves.toEqual({ ok: true })
@@ -229,6 +368,7 @@ describe("transport", () => {
         url: new URL("https://play.dlsite.com/api/v4/content/works"),
         endpoint: "library.works",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/works"),
         credentials: "none",
         body: { contentType: "application/json", text: "{}" },
       }),
@@ -243,6 +383,7 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
       }),
     ).rejects.toBeInstanceOf(RateLimited)
@@ -258,6 +399,7 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
       }),
     ).rejects.toBeInstanceOf(HttpError)
@@ -289,6 +431,7 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
       }),
     ).rejects.toMatchObject({ code: "TransportError", reason: "timeout" })
@@ -305,6 +448,7 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
         signal: controller.signal,
       }),
@@ -329,6 +473,7 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
       }),
     ).rejects.toBeInstanceOf(HttpError)
@@ -340,7 +485,7 @@ describe("transport", () => {
       () =>
         new Response("SECRET_RESPONSE_BODY", {
           status: 302,
-          headers: { Location: "/loop" },
+          headers: { Location: "/api/v4/content/sales" },
         }),
     )
     const transport = createTransport(server, createClock())
@@ -350,6 +495,7 @@ describe("transport", () => {
         url: salesUrl,
         endpoint: "test",
         allowedHosts: ["play.dlsite.com"],
+        allowedPath: exactPath("/api/v4/content/sales"),
         credentials: "none",
       })
       .catch((caught: unknown) => caught)

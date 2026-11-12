@@ -1,7 +1,7 @@
 import { createAccessOperation, type Access } from "../access.js"
-import type { Auth, SessionContext } from "../auth.js"
+import { type Auth, combineSignals, type SessionContext } from "../auth.js"
 import { HttpError } from "../errors.js"
-import { buildResourceUrl } from "../internal/url.js"
+import { buildResourceUrl, pathPrefix } from "../internal/url.js"
 import type {
   ManifestApi,
   ManifestOptions,
@@ -37,12 +37,14 @@ export class Manifest implements ManifestApi {
     options: ManifestOptions = {},
   ): Promise<WorkManifest> {
     return this.auth.operation(async (context) => {
+      const signal = combineSignals(context.signal, options.signal)
       const operation = createAccessOperation()
       let grant = await this.access.getGrant(context, workId, {
         refreshAccess: options.refreshAccess === true,
         operation,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        ...(signal === undefined ? {} : { signal }),
       })
+      this.auth.assertCurrent(context)
 
       let retriedFor403 = false
       let value: unknown
@@ -53,14 +55,16 @@ export class Manifest implements ManifestApi {
           grant.params,
           "manifest.get",
         )
+        const allowedPath = pathPrefix(new URL(grant.baseUrl).pathname)
         try {
           value = await this.transport.requestJson({
             method: "GET",
             url,
             endpoint: "manifest.get",
             allowedHosts: [CDN_HOST],
+            allowedPath,
             credentials: "none",
-            ...(options.signal === undefined ? {} : { signal: options.signal }),
+            ...(signal === undefined ? {} : { signal }),
           })
           break
         } catch (error) {
@@ -69,15 +73,16 @@ export class Manifest implements ManifestApi {
             error.status === 403 &&
             !retriedFor403
           ) {
+            this.auth.assertCurrent(context)
             retriedFor403 = true
             this.access.invalidate(context, workId)
+            this.auth.assertCurrent(context)
             grant = await this.access.getGrant(context, workId, {
               refreshAccess: true,
               operation,
-              ...(options.signal === undefined
-                ? {}
-                : { signal: options.signal }),
+              ...(signal === undefined ? {} : { signal }),
             })
+            this.auth.assertCurrent(context)
             continue
           }
           throw error
@@ -113,7 +118,7 @@ export class Manifest implements ManifestApi {
         versions: inferred.versions,
         diagnostics: inferred.diagnostics,
       }
-    })
+    }, options)
   }
 
   getLatestContext(

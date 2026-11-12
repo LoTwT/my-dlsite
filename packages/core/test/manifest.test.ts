@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { HttpError, UnexpectedResponse } from "../src/errors.js"
+import { HttpError, SessionChanged, UnexpectedResponse } from "../src/errors.js"
 import { createHarness } from "./client-helpers.js"
 import {
   jsonResponse,
@@ -11,9 +11,18 @@ import {
 
 const workId = "RJ123456"
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver
+  })
+  return { promise, resolve }
+}
+
 interface ManifestHandlerOptions {
   manifest?: unknown
   failManifest?: (call: number) => Response | null
+  redirectManifestTo?: string
 }
 
 function manifestHandler(options: ManifestHandlerOptions = {}) {
@@ -30,6 +39,12 @@ function manifestHandler(options: ManifestHandlerOptions = {}) {
     }
     if (url.pathname.endsWith("/ziptree.json")) {
       manifestCalls += 1
+      if (manifestCalls === 1 && options.redirectManifestTo !== undefined) {
+        return new Response("", {
+          status: 302,
+          headers: { Location: options.redirectManifestTo },
+        })
+      }
       const failure = options.failManifest?.(manifestCalls)
       if (failure !== null && failure !== undefined) return failure
       return jsonResponse(options.manifest ?? manifestFixture(workId))
@@ -125,6 +140,21 @@ describe("manifest", () => {
     expect(headers["Authorization"]).toBeUndefined()
   })
 
+  it("rejects a CDN redirect outside the current grant path", async () => {
+    const harness = await manifestHarness({
+      redirectManifestTo: "https://play.dl.dlsite.com/unrelated/ziptree.json",
+    })
+    await expect(harness.client.manifest.get(workId)).rejects.toMatchObject({
+      code: "UnexpectedResponse",
+      diagnostic: "unexpected_target",
+    })
+    expect(
+      harness.server.calls.filter((call) =>
+        call.url.pathname.endsWith("/ziptree.json"),
+      ),
+    ).toHaveLength(1)
+  })
+
   it("rejects a manifest for a different work id", async () => {
     const fixture = manifestFixture(workId)
     fixture.workno = "RJ999999"
@@ -179,6 +209,44 @@ describe("manifest", () => {
       ),
     ).toHaveLength(2)
   })
+
+  it.each([403, 500])(
+    "maps a late CDN %i to SessionChanged without requesting a recovery grant",
+    async (status) => {
+      let signCalls = 0
+      let ziptreeCalls = 0
+      const nextResponse = deferred<Response>()
+      const nextStarted = deferred<void>()
+      const harness = createHarness((url) => {
+        if (url.pathname === "/api/v4/content/sales")
+          return jsonResponse(salesResponse([]))
+        if (url.pathname === "/api/v4/download/sign/url") {
+          signCalls += 1
+          return jsonResponse(signResponse(workId, 2_000_000_000))
+        }
+        if (url.pathname.endsWith("/ziptree.json")) {
+          ziptreeCalls += 1
+          if (ziptreeCalls === 1) return jsonResponse(manifestFixture(workId))
+          nextStarted.resolve()
+          return nextResponse.promise
+        }
+        return new Response("", { status: 404 })
+      })
+      await harness.client.auth.importCookies([playSessionCookie()])
+      await harness.client.manifest.get(workId)
+
+      const pending = harness.client.manifest.get(workId)
+      await nextStarted.promise
+      await harness.client.auth.importCookies([
+        playSessionCookie({ value: "NEW_SESSION" }),
+      ])
+      nextResponse.resolve(new Response("", { status }))
+
+      await expect(pending).rejects.toBeInstanceOf(SessionChanged)
+      expect(signCalls).toBe(1)
+      expect(ziptreeCalls).toBe(2)
+    },
+  )
 
   it("forces a new grant when refreshAccess is requested", async () => {
     const harness = await manifestHarness()

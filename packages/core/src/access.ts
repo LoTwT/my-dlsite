@@ -1,11 +1,7 @@
 import * as v from "valibot"
 import type { Auth, SessionContext } from "./auth.js"
-import {
-  Aborted,
-  GrantExpired,
-  SessionChanged,
-  UnexpectedResponse,
-} from "./errors.js"
+import { Aborted, GrantExpired, UnexpectedResponse } from "./errors.js"
+import { exactPath } from "./internal/url.js"
 import { GRANT_REFRESH_THRESHOLD_MS } from "./model.js"
 import type { Transport } from "./transport.js"
 
@@ -76,6 +72,8 @@ export class Access {
     workId: string,
     options: AccessOptions = {},
   ): Promise<Grant> {
+    if (options.signal?.aborted === true) throw new Aborted()
+    this.auth.assertCurrent(context)
     const key = this.key(context, workId)
     const operation = options.operation
     const cached = this.cache.get(key)
@@ -130,15 +128,17 @@ export class Access {
       url,
       endpoint: "access.sign",
       allowedHosts: [PLAY_HOST],
+      allowedPath: exactPath(SIGN_URL.pathname),
       credentials: "session",
       jar: context.jar,
+      signal: context.signal,
     })
 
+    this.auth.assertCurrent(context)
     const parsed = v.safeParse(signResponseSchema, value)
     if (!parsed.success) {
       throw new UnexpectedResponse("access.sign", "sign_shape")
     }
-    if (!this.auth.isCurrent(context)) throw new SessionChanged()
 
     const base = parseBaseUrl(parsed.output.url, workId)
     const expiresAt = resolveExpiry(
@@ -147,6 +147,7 @@ export class Access {
     )
     const now = this.now()
     if (expiresAt <= now) throw new GrantExpired(workId)
+    this.auth.assertCurrent(context)
 
     const grant: Grant = {
       workId,
@@ -159,6 +160,7 @@ export class Access {
       expiresAt,
     }
 
+    this.auth.assertCurrent(context)
     if (this.latestRequest.get(key) === token) {
       this.cache.set(key, grant)
     }
@@ -253,12 +255,18 @@ function resolveExpiry(policy: string, expires: string | undefined): number {
 }
 
 function decodePolicy(policy: string): unknown {
-  for (const encoding of ["base64", "base64url"] as const) {
-    try {
-      const text = Buffer.from(policy, encoding).toString("utf8")
-      return JSON.parse(text) as unknown
-    } catch {
-      // Try the other encoding.
+  const cloudFrontEncoding = policy
+    .replace(/-/g, "+")
+    .replace(/_/g, "=")
+    .replace(/~/g, "/")
+  for (const candidate of [cloudFrontEncoding, policy]) {
+    for (const encoding of ["base64", "base64url"] as const) {
+      try {
+        const text = Buffer.from(candidate, encoding).toString("utf8")
+        return JSON.parse(text) as unknown
+      } catch {
+        // Try the next encoding/candidate.
+      }
     }
   }
   throw new UnexpectedResponse("access.sign", "invalid_policy")

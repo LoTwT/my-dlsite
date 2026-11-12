@@ -1,8 +1,22 @@
 import { UnexpectedResponse } from "../errors.js"
 
+export interface AllowedPath {
+  readonly path: string
+  readonly match: "exact" | "prefix"
+}
+
+export function exactPath(path: string): AllowedPath {
+  return { path, match: "exact" }
+}
+
+export function pathPrefix(path: string): AllowedPath {
+  return { path, match: "prefix" }
+}
+
 export function assertAllowedUrl(
   url: URL,
   allowedHosts: readonly string[],
+  allowedPath: AllowedPath,
   endpoint: string,
 ): void {
   if (
@@ -12,10 +26,24 @@ export function assertAllowedUrl(
     url.port !== "" ||
     !allowedHosts.some(
       (host) => host.toLowerCase() === url.hostname.toLowerCase(),
-    )
+    ) ||
+    !isAllowedPath(url.pathname, allowedPath)
   ) {
     throw new UnexpectedResponse(endpoint, "unexpected_target")
   }
+}
+
+function isAllowedPath(pathname: string, allowed: AllowedPath): boolean {
+  if (
+    !allowed.path.startsWith("/") ||
+    allowed.path.includes("?") ||
+    allowed.path.includes("#")
+  ) {
+    return false
+  }
+  if (allowed.match === "exact") return pathname === allowed.path
+  if (allowed.path.endsWith("/")) return pathname.startsWith(allowed.path)
+  return pathname === allowed.path || pathname.startsWith(`${allowed.path}/`)
 }
 
 export function isKnownLoginUrl(url: URL): boolean {
