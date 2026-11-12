@@ -2,7 +2,7 @@
 
 my-dlsite 项目的 pnpm workspace monorepo，私有根包名为 `my-dlsite-monorepo`。
 
-当前只有根目录配置：根包私有、不发布，工作区范围为 `packages/*`，尚未创建任何子包。七个业务模块计划放在 `packages/core`，业务代码尚未实现。
+`packages/core`（`@my-dlsite/core`）已实现 CORE-01：现有 Play 会话 → 作品库 → 文件清单 → 播放地址。CORE-02 的单 ZIP 下载计划尚未实现，将在 CORE-01 合并后从最新 main 开始；CORE-01 不暴露 `acquisition` 方法或占位模块。
 
 ## 技术栈
 
@@ -32,25 +32,30 @@ pnpm install
 ```text
 .
 ├── docs/               # 文档，入口见 docs/index.md
+├── packages/core/      # CORE-01 业务实现与测试
 ├── .vscode/            # 编辑器配置
 ├── AGENTS.md           # Agent 工作指南
 ├── package.json        # 私有根包与工作区命令
 └── pnpm-workspace.yaml # workspace 范围与 pnpm 设置
 ```
 
-`packages/*` 是未来的子包位置；当前没有子包目录，因此根目录也没有 `src/` 或 `tests/`。
+根目录没有 `src/` 或 `tests/`；业务源码和测试在对应子包内。
 
 ## 命令
 
-| 命令                | 说明                       |
-| ------------------- | -------------------------- |
-| `pnpm lint`         | oxlint 检查根目录与子包    |
-| `pnpm format`       | oxfmt 格式化               |
-| `pnpm format:check` | 只检查格式，不修改文件     |
-| `pnpm deps`         | 用 taze 递归检查并升级依赖 |
-| `pnpm run prepare`  | 安装或更新 pre-commit 钩子 |
+| 命令                                      | 说明                              |
+| ----------------------------------------- | --------------------------------- |
+| `pnpm lint`                               | oxlint 检查根目录与子包           |
+| `pnpm format`                             | oxfmt 格式化                      |
+| `pnpm format:check`                       | 只检查格式，不修改文件            |
+| `pnpm deps`                               | 用 taze 递归检查并升级依赖        |
+| `pnpm run prepare`                        | 安装或更新 pre-commit 钩子        |
+| `pnpm --filter @my-dlsite/core typecheck` | core 类型检查                     |
+| `pnpm --filter @my-dlsite/core test`      | core Vitest 测试                  |
+| `pnpm --filter @my-dlsite/core build`     | 编译 core 到 `packages/core/dist` |
+| `pnpm --filter @my-dlsite/core check`     | core typecheck、test、build       |
 
-构建、测试与类型检查的工具和配置由子包按需定义，根目录不提供 TypeScript 编译器、Node 类型依赖或共享 TS 配置。
+构建、测试与类型检查的工具和配置放在子包；根目录不提供 TypeScript 编译器、Node 类型依赖或共享 TS 配置。
 
 ## 检查范围
 
@@ -59,6 +64,8 @@ pnpm install
 ## 文档
 
 从 [docs/index.md](./docs/index.md) 开始；开发环境、命令、检查范围和包边界见 [docs/development.md](./docs/development.md)。
+
+core 的实现状态、接口、验证依据与 CORE-02 边界见 [core 包设计](./docs/specs/core.md)。
 
 ## License
 

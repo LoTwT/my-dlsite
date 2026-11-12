@@ -8,43 +8,50 @@
 
 ## 当前状态与边界
 
-- 本仓库目前只有 monorepo 根目录，没有 `packages/*` 子包。
-- 根包 `my-dlsite-monorepo` 为私有包，不发布；不维护 `exports`、`files`、`imports` 或发布产物，也没有根级 `src/`、`tests/`。
-- 未来的业务代码放在 `packages/*`，七个业务模块属于 `packages/core`，当前尚未实现。根目录不承载播放器、下载或其他业务源码。
+- `packages/core` 已存在，包名 `@my-dlsite/core`，私有、不发布；CORE-01 已实现会话恢复、作品库、文件清单和播放地址。
+- `acquisition`（单 ZIP 下载计划）属于 CORE-02，尚未实现；CORE-01 不暴露假方法、占位模块或下载计划类型。
+- 根包 `my-dlsite-monorepo` 仍为私有包，不发布；不维护 `exports`、`files`、`imports` 或发布产物，也没有根级 `src/`、`tests/`。
+- 根目录不承载播放器、下载或其他业务源码；后续子包继续放在 `packages/*`。
 
 ## 命令
 
-| 命令                | 作用                                                                 |
-| ------------------- | -------------------------------------------------------------------- |
-| `pnpm install`      | 按锁文件安装依赖；`prepare` 安装 simple-git-hooks 的 pre-commit 钩子 |
-| `pnpm lint`         | oxlint，包含类型感知规则；检查根目录与子包                           |
-| `pnpm format`       | oxfmt 格式化                                                         |
-| `pnpm format:check` | 检查格式，不修改文件                                                 |
-| `pnpm deps`         | taze 递归检查并升级依赖                                              |
-| `pnpm run prepare`  | 安装或更新 simple-git-hooks 的 pre-commit 钩子                       |
+| 命令                                      | 作用                                                                 |
+| ----------------------------------------- | -------------------------------------------------------------------- |
+| `pnpm install`                            | 按锁文件安装依赖；`prepare` 安装 simple-git-hooks 的 pre-commit 钩子 |
+| `pnpm lint`                               | oxlint，包含类型感知规则；检查根目录与子包                           |
+| `pnpm format`                             | oxfmt 格式化                                                         |
+| `pnpm format:check`                       | 检查格式，不修改文件                                                 |
+| `pnpm deps`                               | taze 递归检查并升级依赖                                              |
+| `pnpm run prepare`                        | 安装或更新 simple-git-hooks 的 pre-commit 钩子                       |
+| `pnpm --filter @my-dlsite/core typecheck` | core 的严格 TypeScript 类型检查                                      |
+| `pnpm --filter @my-dlsite/core test`      | core 的 Vitest 测试；使用 fake fetch/合成样例                        |
+| `pnpm --filter @my-dlsite/core build`     | 把 core 编译到 `packages/core/dist`                                  |
+| `pnpm --filter @my-dlsite/core check`     | 依次运行 typecheck、test、build                                      |
 
-类型感知 lint 由根依赖 `oxlint-tsgolint` 提供。当前根目录没有可 lint 的 JS/TS 文件，`lint` 使用 `--no-error-on-unmatched-pattern` 让零匹配时返回成功。该参数只放过“没有可检查文件”，不抑制任何实际诊断；子包源码加入后会正常参与检查。
+类型感知 lint 由根依赖 `oxlint-tsgolint` 提供，直接检查 `packages/core` 源码与测试。`lint` 的 `--no-error-on-unmatched-pattern` 只放过零匹配，不抑制任何实际诊断。
 
 ## 工作区与包约定
 
 - `pnpm-workspace.yaml` 的 `packages: packages/*` 定义发现范围；新增或移除子包目录不需要修改根配置。
 - 根目录只保留当前实际使用的命令；构建、测试等聚合命令在有实际需求时再添加。
 - 子包自带 `package.json`，按需定义构建、测试和类型检查的工具、配置与脚本，根目录不假设子包存在 `src/` 或 `tests/`。
-- 根目录不提供 TypeScript 编译器、Node 类型依赖、共享 TS 配置或类型检查命令；这些能力在子包创建时按实际需求配置。子包的运行时类型应匹配其自身的兼容范围，不由根目录的开发环境版本决定。
-- 根级 `lint` 与 `format` 面向整个工作区，子包通常不需要重复配置 Oxc。确需包级覆盖时，使用 Oxc 的 `overrides` 并在子包文档中说明。
-- 根包不发布。未来子包是否发布由各自 `package.json` 决定，不沿用根包的名称、仓库链接或版本策略。
+- `@my-dlsite/core` 使用 ESM、TypeScript 严格模式和 `noUncheckedIndexedAccess`；运行时 `engines.node` 为 `>=24.11`，已在 Node.js `24.11.1` 上验证构建产物入口。根目录的开发环境 Node 26 不抬高该下限。
+- core 的运行时依赖为 `tough-cookie` 与 `valibot`；开发依赖 `typescript`、`vitest`、`@types/node` 放在子包。根目录不提供 TypeScript 编译器、Node 类型依赖或共享 TS 配置。
+- 根级 `lint` 与 `format` 面向整个工作区，子包不重复配置 Oxc。确需包级覆盖时，使用 Oxc 的 `overrides` 并在子包文档中说明。
+- 根包不发布。子包是否发布由各自 `package.json` 决定，不沿用根包的名称、仓库链接或版本策略；core 当前为私有包。
 
 ## 检查范围与验证
 
-- `.gitignore` 保留 HAR 忽略规则（`*.har`、`har-report*.txt`）。原始 HAR 含 Cookie、签名凭据，不提交，也不供检查或构建读取；不运行真实 DLsite 请求。
+- `.gitignore` 保留 HAR 忽略规则（`*.har`、`har-report*.txt`）。原始 HAR 含 Cookie、签名凭据，不提交，也不供检查或构建读取；常规测试不运行真实 DLsite 请求。
 - pre-commit 钩子对整个工作区运行 `pnpm lint` 与 `pnpm format:check`，不修改文件。修改 `simple-git-hooks` 配置后，运行 `pnpm run prepare` 更新已安装的钩子。检查失败时修复后重新提交，不跳过钩子。
 - 修改根配置或文档时，至少运行 `pnpm lint` 与 `pnpm format:check`。
-- 子包源码改动由该子包的类型检查与测试覆盖；根目录不重复实现包级检查。
+- core 源码改动运行 `pnpm --filter @my-dlsite/core check`（typecheck、test、build），并运行根 `pnpm lint`、`pnpm format:check`。测试使用 fake fetch、可控时钟和合成/充分脱敏结构，不读取 `LIVE-RESULT` 或用户凭据。
+- 真实服务验证需另行明确授权与范围；离线测试不能证明线上协议仍可用。
 
 ## 编码约定
 
 - 只使用 ESM；不添加 CommonJS 字段或产物。
-- 测试框架、测试目录与导入别名由子包在创建时确定并记录在子包文档中；根目录不预设这些约定。
+- core 的测试位于 `packages/core/test`，使用 Vitest 与显式导入，不使用全局测试 API 或路径别名。根目录不预设其他子包的测试约定。
 
 ## 依赖升级
 

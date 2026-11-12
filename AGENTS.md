@@ -12,4 +12,4 @@
 
 ## 项目结构
 
-本仓库是 pnpm workspace monorepo。根目录只放工作区配置、共享工具配置和文档，业务代码放在 `packages/*`；当前尚未创建子包，边界详见 `docs/development.md`。
+本仓库是 pnpm workspace monorepo。根目录只放工作区配置、共享工具配置和文档，业务代码放在 `packages/*`。`packages/core`（`@my-dlsite/core`）已实现 CORE-01 的会话、作品库、文件清单与播放地址；`acquisition` 属于 CORE-02，尚未实现。边界与命令详见 `docs/development.md`，接口与完整性限制见 `docs/specs/core.md`。
