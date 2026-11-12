@@ -210,6 +210,7 @@ export interface WorkManifest {
   updatedAt: string | null
   tree: readonly ManifestNode[]
   playfiles: Readonly<Record<string, PlayfileEntry>>
+  extra: Readonly<Record<string, unknown>>
   tracks: readonly Track[]
   subtitles: readonly SubtitleCandidate[]
   versions: readonly VersionCandidate[]

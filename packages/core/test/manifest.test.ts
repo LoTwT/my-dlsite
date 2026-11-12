@@ -90,6 +90,16 @@ describe("manifest", () => {
     expect(codes).toContain("unknown_playfile_type")
   })
 
+  it("preserves unknown top-level manifest fields", async () => {
+    const fixture = manifestFixture(workId) as ReturnType<
+      typeof manifestFixture
+    > & { top_level_extra: string }
+    fixture.top_level_extra = "kept"
+    const harness = await manifestHarness({ manifest: fixture })
+    const manifest = await harness.client.manifest.get(workId)
+    expect(manifest.extra["top_level_extra"]).toBe("kept")
+  })
+
   it("requests ziptree with signature parameters only and no login cookies", async () => {
     const harness = await manifestHarness()
     await harness.client.manifest.get(workId)

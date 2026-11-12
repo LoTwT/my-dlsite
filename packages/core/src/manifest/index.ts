@@ -107,6 +107,7 @@ export class Manifest implements ManifestApi {
         updatedAt: parsed.updatedAt,
         tree: parsed.tree,
         playfiles: parsed.playfiles,
+        extra: parsed.extra,
         tracks: inferred.tracks,
         subtitles: inferred.subtitles,
         versions: inferred.versions,

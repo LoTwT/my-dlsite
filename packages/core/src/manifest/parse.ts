@@ -9,6 +9,16 @@ import type {
   TextOptimized,
 } from "../model.js"
 
+const TOP_LEVEL_KEYS = new Set([
+  "version",
+  "workno",
+  "revision",
+  "hash",
+  "updated_at",
+  "tree",
+  "playfile",
+])
+
 const documentSchema = v.object({
   version: v.string(),
   workno: v.string(),
@@ -26,6 +36,7 @@ export interface ParsedManifest {
   updatedAt: string | null
   tree: readonly ManifestNode[]
   playfiles: Readonly<Record<string, PlayfileEntry>>
+  extra: Readonly<Record<string, unknown>>
   diagnostics: readonly Diagnostic[]
 }
 
@@ -54,6 +65,13 @@ export function parseManifestDocument(
     if (parsedEntry !== null) playfiles[hashname] = parsedEntry
   }
 
+  const extra: Record<string, unknown> = {}
+  if (isRecord(value)) {
+    for (const [key, entry] of Object.entries(value)) {
+      if (!TOP_LEVEL_KEYS.has(key)) extra[key] = entry
+    }
+  }
+
   return {
     version: parsed.output.version,
     revision: parsed.output.revision,
@@ -61,6 +79,7 @@ export function parseManifestDocument(
     updatedAt: parsed.output.updated_at ?? null,
     tree,
     playfiles,
+    extra,
     diagnostics,
   }
 }
