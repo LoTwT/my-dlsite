@@ -32,6 +32,23 @@ function harness(rejectCandidate = false) {
 }
 
 describe("login transaction", () => {
+  it("returns success when cancellation arrives after Core committed but before its import promise returns", async () => {
+    const { client, browser } = harness()
+    const controller = new AbortController()
+    const original = client.auth.importCookies.bind(client.auth)
+    vi.spyOn(client.auth, "importCookies").mockImplementation(
+      async (...args) => {
+        await original(...args)
+        controller.abort()
+      },
+    )
+    await expect(
+      runLoginTransaction(client.auth, async () => browser, {
+        signal: controller.signal,
+      }),
+    ).resolves.toBeUndefined()
+    expect((await client.auth.export()).cookies[0]?.value).toBe("SYNTHETIC_NEW")
+  })
   it("keeps the deadline active while cleaning up a failed capture", async () => {
     const { client } = harness()
     const neverCloses: LoginBrowser = {

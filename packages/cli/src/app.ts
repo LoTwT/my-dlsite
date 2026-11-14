@@ -4,6 +4,8 @@ import { AuthRequired, CoreError, InvalidInput } from "@my-dlsite/core"
 import type { AuthApi, DlsiteClient } from "@my-dlsite/core"
 import { SessionStoreError, withSessionStore } from "./session-store.js"
 
+const WORK_ID_RE = /^[A-Z]{2}\d{4,12}$/
+
 export type Command =
   | { name: "login"; browserProxy?: string }
   | { name: "library" }
@@ -28,11 +30,7 @@ export class CliError extends Error {
 export function parseCommand(args: readonly string[]): Command {
   if (args.length === 1 && args[0] === "login") return { name: "login" }
   if (args.length === 1 && args[0] === "library") return { name: "library" }
-  if (
-    args.length === 2 &&
-    args[0] === "plan" &&
-    /^[A-Z]{2}\d{4,12}$/.test(args[1] ?? "")
-  )
+  if (args.length === 2 && args[0] === "plan" && WORK_ID_RE.test(args[1] ?? ""))
     return { name: "plan", workId: args[1] as string }
   if (
     args.length === 3 &&
@@ -126,6 +124,9 @@ export async function executeCommand(
         summary = {
           outcome: "library-complete",
           works: library.works.length,
+          workIds: library.works
+            .map((work) => work.purchase.workId)
+            .filter((workId) => WORK_ID_RE.test(workId)),
           otherPurchases: library.otherPurchases.length,
           missingMetadata: library.missingMetadata.length,
           diagnostics: library.diagnostics.length,

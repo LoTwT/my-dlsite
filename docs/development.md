@@ -8,7 +8,7 @@
 
 ## 当前状态与边界
 
-- LOGIN-CLI-01 正在 `packages/browser-auth` 与 `packages/cli` 实施。独立事务、转换及会话文件模块已有合成检查；实际观察器和 CLI 可执行入口尚未接入。当前边界见 [浏览器登录与 CLI](./specs/browser-login-cli.md)。
+- LOGIN-CLI-01 在 `packages/browser-auth` 与 `packages/cli` 实现了专用浏览器登录、CLI 与安全会话保存，已通过离线合成检查；新真人登录链仍待另行授权验收。公开接口、捕获依据与兼容范围见 [浏览器登录与 CLI](./specs/browser-login-cli.md)。
 - `packages/core` 已存在，包名 `@my-dlsite/core`，私有、不发布；CORE-01 已实现会话恢复、作品库、文件清单和播放地址。
 - CORE-02 已实现已观察的单 ZIP 原版下载计划：`client.acquisition.plan(workId, { signal? })` 返回 `AcquisitionPlan`。它只生成下载地址和按最终 URL 作用域计算的请求头，不下载、不写文件、不解压，也不支持分卷、序列号或其他交付方式。
 - 根包 `my-dlsite-monorepo` 仍为私有包，不发布；不维护 `exports`、`files`、`imports` 或发布产物，也没有根级 `src/`、`tests/`。
@@ -16,20 +16,24 @@
 
 ## 命令
 
-| 命令                                      | 作用                                                                 |
-| ----------------------------------------- | -------------------------------------------------------------------- |
-| `pnpm install`                            | 按锁文件安装依赖；`prepare` 安装 simple-git-hooks 的 pre-commit 钩子 |
-| `pnpm lint`                               | oxlint，包含类型感知规则；检查根目录与子包                           |
-| `pnpm format`                             | oxfmt 格式化                                                         |
-| `pnpm format:check`                       | 检查格式，不修改文件                                                 |
-| `pnpm deps`                               | taze 递归检查并升级依赖                                              |
-| `pnpm run prepare`                        | 安装或更新 simple-git-hooks 的 pre-commit 钩子                       |
-| `pnpm --filter @my-dlsite/core typecheck` | core 的严格 TypeScript 类型检查                                      |
-| `pnpm --filter @my-dlsite/core test`      | core 的 Vitest 测试；使用 fake fetch/合成样例                        |
-| `pnpm --filter @my-dlsite/core build`     | 把 core 编译到 `packages/core/dist`                                  |
-| `pnpm --filter @my-dlsite/core check`     | 依次运行 typecheck、test、build                                      |
+| 命令                                                    | 作用                                                                 |
+| ------------------------------------------------------- | -------------------------------------------------------------------- |
+| `pnpm install`                                          | 按锁文件安装依赖；`prepare` 安装 simple-git-hooks 的 pre-commit 钩子 |
+| `pnpm lint`                                             | oxlint，包含类型感知规则；检查根目录与子包                           |
+| `pnpm format`                                           | oxfmt 格式化                                                         |
+| `pnpm format:check`                                     | 检查格式，不修改文件                                                 |
+| `pnpm deps`                                             | taze 递归检查并升级依赖                                              |
+| `pnpm run prepare`                                      | 安装或更新 simple-git-hooks 的 pre-commit 钩子                       |
+| `pnpm --filter @my-dlsite/core typecheck`               | core 的严格 TypeScript 类型检查                                      |
+| `pnpm --filter @my-dlsite/core test`                    | core 的 Vitest 测试；使用 fake fetch/合成样例                        |
+| `pnpm --filter @my-dlsite/core build`                   | 把 core 编译到 `packages/core/dist`                                  |
+| `pnpm --filter @my-dlsite/core check`                   | 依次运行 typecheck、test、build                                      |
+| `pnpm --filter @my-dlsite/browser-auth browser:install` | 显式准备固定版本的 Chromium，不在 login 中自动执行                   |
+| `pnpm --filter @my-dlsite/browser-auth check`           | 登录库 typecheck、test、build，测试需可见浏览器环境                  |
+| `pnpm --filter @my-dlsite/cli check`                    | CLI typecheck、test、build，先构建其依赖包                           |
+| `node packages/cli/dist/bin.js --help`                  | 使用构建后的 CLI；支持 login、library、plan                          |
 
-类型感知 lint 由根依赖 `oxlint-tsgolint` 提供，直接检查 `packages/core` 源码与测试。`lint` 的 `--no-error-on-unmatched-pattern` 只放过零匹配，不抑制任何实际诊断。
+类型感知 lint 由根依赖 `oxlint-tsgolint` 提供，直接检查工作区各包的源码与测试。`lint` 的 `--no-error-on-unmatched-pattern` 只放过零匹配，不抑制任何实际诊断。
 
 ## 工作区与包约定
 

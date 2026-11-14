@@ -94,7 +94,7 @@ export class Auth implements AuthApi {
       const jar = await this.jarFromScopedCookies(cookies)
       await this.probeCandidate(jar, options.signal)
       this.replace(jar)
-    })
+    }, options.signal)
   }
 
   async restore(
@@ -105,7 +105,7 @@ export class Auth implements AuthApi {
       const jar = await this.jarFromSnapshot(snapshot)
       await this.probeCandidate(jar, options.signal)
       this.replace(jar)
-    })
+    }, options.signal)
   }
 
   async export(): Promise<SessionSnapshot> {
@@ -232,13 +232,23 @@ export class Auth implements AuthApi {
     throwIfAborted(signal)
   }
 
-  private async serial<T>(run: () => Promise<T>): Promise<T> {
+  private async serial<T>(
+    run: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
     let release: (() => void) | undefined
     const previous = this.queue
     this.queue = new Promise<void>((resolve) => {
       release = resolve
     })
-    await previous
+    try {
+      await waitForQueue(previous, signal)
+    } catch (error) {
+      // A canceled waiter returns promptly, but its queue position cannot
+      // release successors before the preceding replacement has finished.
+      void previous.then(() => release?.())
+      throw error
+    }
     try {
       return await run()
     } finally {
@@ -278,6 +288,22 @@ export class Auth implements AuthApi {
     }
     return jar
   }
+}
+
+async function waitForQueue(
+  previous: Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  throwIfAborted(signal)
+  if (signal === undefined) return previous
+  await new Promise<void>((resolve, reject) => {
+    const aborted = () => reject(new Aborted())
+    signal.addEventListener("abort", aborted, { once: true })
+    void previous.then(() => {
+      signal.removeEventListener("abort", aborted)
+      resolve()
+    })
+  })
 }
 
 export function combineSignals(

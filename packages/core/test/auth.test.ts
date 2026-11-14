@@ -50,6 +50,51 @@ function salesHandler(calls: { cookie?: string }[] = []) {
 }
 
 describe("auth", () => {
+  it("cancels a queued replacement promptly without releasing its successor ahead of the active candidate", async () => {
+    let releaseFirst: (response: Response) => void = () => {}
+    let startedFirst: () => void = () => {}
+    const firstStarted = new Promise<void>((resolve) => {
+      startedFirst = resolve
+    })
+    const firstResponse = new Promise<Response>((resolve) => {
+      releaseFirst = resolve
+    })
+    const seen: string[] = []
+    const harness = authHarness((_url, init) => {
+      const cookie = new Headers(init.headers).get("cookie") ?? ""
+      seen.push(cookie)
+      if (cookie.includes("FIRST")) {
+        startedFirst()
+        return firstResponse
+      }
+      return jsonResponse([])
+    })
+    await harness.auth.importCookies([playSessionCookie({ value: "OLD" })])
+    const first = harness.auth.importCookies([
+      playSessionCookie({ value: "FIRST" }),
+    ])
+    await firstStarted
+    const controller = new AbortController()
+    const second = harness.auth.importCookies(
+      [playSessionCookie({ value: "SECOND" })],
+      { signal: controller.signal },
+    )
+    const third = harness.auth.importCookies([
+      playSessionCookie({ value: "THIRD" }),
+    ])
+    controller.abort()
+    await expect(second).rejects.toBeInstanceOf(Aborted)
+    expect((await harness.auth.export()).cookies[0]?.value).toBe("OLD")
+    expect(
+      seen.some(
+        (cookie) => cookie.includes("SECOND") || cookie.includes("THIRD"),
+      ),
+    ).toBe(false)
+    releaseFirst(jsonResponse([]))
+    await Promise.all([first, third])
+    expect((await harness.auth.export()).cookies[0]?.value).toBe("THIRD")
+    expect(seen.some((cookie) => cookie.includes("SECOND"))).toBe(false)
+  })
   it("preserves subsecond absolute expiry through import, export and restore", async () => {
     vi.useFakeTimers({ toFake: ["Date"] })
     vi.setSystemTime(1_700_000_000_000)

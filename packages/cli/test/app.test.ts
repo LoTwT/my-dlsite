@@ -144,6 +144,7 @@ describe("CLI session lifecycle", () => {
     expect(summaries).toContainEqual({
       outcome: "library-complete",
       works: 0,
+      workIds: [],
       otherPurchases: 0,
       missingMetadata: 0,
       diagnostics: 0,

@@ -2,9 +2,12 @@
   "name": "@my-dlsite/cli",
   "version": "0.0.0",
   "private": true,
+  "bin": {
+    "my-dlsite": "./dist/bin.js"
+  },
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/bin.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "check": "pnpm typecheck && pnpm test && pnpm build"

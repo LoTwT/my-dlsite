@@ -102,7 +102,9 @@ export async function runLoginTransaction(
     check()
     stage("checking-session")
     importing = true
-    await untilAborted(auth.importCookies(cookies, { signal }), signal)
+    // Core owns the candidate probe and queue cancellation. Racing its return
+    // against abort could report failure after it already committed a session.
+    await auth.importCookies(cookies, { signal })
     // Successful import is the commit point. Do not recheck cancellation,
     // close, validate, restore, or export after it.
     stage("session-established")

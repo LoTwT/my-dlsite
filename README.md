@@ -4,7 +4,7 @@ my-dlsite 项目的 pnpm workspace monorepo，私有根包名为 `my-dlsite-mono
 
 `packages/core`（`@my-dlsite/core`）已实现 CORE-01（现有 Play 会话 → 作品库 → 文件清单 → 播放地址）和 CORE-02 的已观察单 ZIP 原版下载计划（`client.acquisition.plan`）。下载器、文件传输、解压和序列号流程仍由调用方负责，不在 core 内实现。
 
-LOGIN-CLI-01 正在新增 `packages/browser-auth` 和 `packages/cli`。当前已有登录事务、Chromium 转换和安全会话文件模块；登录观察器与 CLI 可执行入口尚未接入，完整交互仍待验收，见[实施边界](./docs/specs/browser-login-cli.md)。
+`packages/browser-auth` 提供 `loginWithBrowser(client.auth)`，在专用可见浏览器中由用户亲自完成登录，再接入同一个 Core Client。`packages/cli` 提供 `my-dlsite login`、`library` 和 `plan <workId>`，安全保存会话供后续进程恢复。已通过离线合成检查，新真人登录链仍待另行授权验收；见[接口与兼容边界](./docs/specs/browser-login-cli.md)。
 
 ## 技术栈
 
@@ -29,12 +29,28 @@ pnpm install
 
 安装依赖并通过 `prepare` 安装 pre-commit 钩子。
 
+准备浏览器并构建 CLI：
+
+```sh
+pnpm --filter @my-dlsite/core build
+pnpm --filter @my-dlsite/browser-auth browser:install
+pnpm --filter @my-dlsite/browser-auth build
+pnpm --filter @my-dlsite/cli build
+node packages/cli/dist/bin.js login
+node packages/cli/dist/bin.js library
+node packages/cli/dist/bin.js plan RJ000001
+```
+
+请将示例编号替换为库摘要中的适用作品。计划命令只输出安全摘要，不下载文件。快照默认位于 macOS 的 `~/Library/Application Support/my-dlsite/session.json`；浏览器和 Node 的代理配置相互独立，详见规格。
+
 ## 目录
 
 ```text
 .
 ├── docs/               # 文档，入口见 docs/index.md
 ├── packages/core/      # core 业务实现与测试
+├── packages/browser-auth/ # 专用浏览器登录库
+├── packages/cli/       # 命令入口与安全会话文件
 ├── .vscode/            # 编辑器配置
 ├── AGENTS.md           # Agent 工作指南
 ├── package.json        # 私有根包与工作区命令
