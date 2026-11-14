@@ -24,7 +24,7 @@ it("reads real Chromium fields from only the dedicated context without network r
     await page.goto("http://127.0.0.1/synthetic")
     const cdp = await context.newCDPSession(page)
     const browserCdp = await browser.newBrowserCDPSession()
-    const expiry = Math.floor(Date.now() / 1_000) + 600
+    const expiry = Math.floor(Date.now() / 1_000) + 600.123456
     await cdp.send("Network.setCookies", {
       cookies: [
         {
@@ -73,6 +73,17 @@ it("reads real Chromium fields from only the dedicated context without network r
       hostOnly: true,
       expires: expiry,
     })
+    const fetchImpl = (async () => Response.json([])) as typeof fetch
+    const client = createClient({ fetch: fetchImpl })
+    await client.auth.importCookies(projected)
+    const snapshot = await client.auth.export()
+    expect(
+      snapshot.cookies.find((cookie) => cookie.name === "synthetic_host")
+        ?.expires,
+    ).toBe(expiry)
+    const restored = createClient({ fetch: fetchImpl })
+    await restored.auth.restore(snapshot)
+    expect(await restored.auth.export()).toEqual(snapshot)
 
     await cdp.send("Network.setCookies", {
       cookies: [
