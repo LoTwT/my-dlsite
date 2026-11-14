@@ -1,4 +1,4 @@
-import { Cookie, CookieJar, MemoryCookieStore } from "tough-cookie"
+import { type Cookie, CookieJar, MemoryCookieStore } from "tough-cookie"
 import * as v from "valibot"
 import {
   Aborted,
@@ -7,6 +7,10 @@ import {
   SessionChanged,
   UnexpectedResponse,
 } from "./errors.js"
+import {
+  createImportedCookie,
+  importedExpirySeconds,
+} from "./internal/absolute-expiry-cookie.js"
 import { exactPath } from "./internal/url.js"
 import type {
   AuthApi,
@@ -94,7 +98,7 @@ export class Auth implements AuthApi {
       const jar = await this.jarFromScopedCookies(cookies)
       await this.probeCandidate(jar, options.signal)
       this.replace(jar)
-    })
+    }, options.signal)
   }
 
   async restore(
@@ -105,7 +109,7 @@ export class Auth implements AuthApi {
       const jar = await this.jarFromSnapshot(snapshot)
       await this.probeCandidate(jar, options.signal)
       this.replace(jar)
-    })
+    }, options.signal)
   }
 
   async export(): Promise<SessionSnapshot> {
@@ -232,13 +236,23 @@ export class Auth implements AuthApi {
     throwIfAborted(signal)
   }
 
-  private async serial<T>(run: () => Promise<T>): Promise<T> {
+  private async serial<T>(
+    run: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
     let release: (() => void) | undefined
     const previous = this.queue
     this.queue = new Promise<void>((resolve) => {
       release = resolve
     })
-    await previous
+    try {
+      await waitForQueue(previous, signal)
+    } catch (error) {
+      // A canceled waiter returns promptly, but its queue position cannot
+      // release successors before the preceding replacement has finished.
+      void previous.then(() => release?.())
+      throw error
+    }
     try {
       return await run()
     } finally {
@@ -278,6 +292,22 @@ export class Auth implements AuthApi {
     }
     return jar
   }
+}
+
+async function waitForQueue(
+  previous: Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  throwIfAborted(signal)
+  if (signal === undefined) return previous
+  await new Promise<void>((resolve, reject) => {
+    const aborted = () => reject(new Aborted())
+    signal.addEventListener("abort", aborted, { once: true })
+    void previous.then(() => {
+      signal.removeEventListener("abort", aborted)
+      resolve()
+    })
+  })
 }
 
 export function combineSignals(
@@ -354,24 +384,27 @@ function createCookie(
   if (seen.has(key)) throw new InvalidInput("duplicate_cookie_scope")
   seen.add(key)
 
-  return new Cookie({
-    key: input.name,
-    value: validateValue(input.value),
-    domain,
-    path,
-    secure: input.secure,
-    httpOnly: input.httpOnly ?? false,
-    hostOnly: input.hostOnly,
-    pathIsDefault: false,
-    expires:
-      input.expires === undefined
-        ? "Infinity"
-        : new Date(input.expires * 1_000),
-    maxAge: null,
-    sameSite: input.sameSite,
-    creation: new Date(nowMilliseconds),
-    lastAccessed: new Date(nowMilliseconds),
-  })
+  return createImportedCookie(
+    {
+      key: input.name,
+      value: validateValue(input.value),
+      domain,
+      path,
+      secure: input.secure,
+      httpOnly: input.httpOnly ?? false,
+      hostOnly: input.hostOnly,
+      pathIsDefault: false,
+      expires:
+        input.expires === undefined
+          ? "Infinity"
+          : new Date(input.expires * 1_000),
+      maxAge: null,
+      sameSite: input.sameSite,
+      creation: new Date(nowMilliseconds),
+      lastAccessed: new Date(nowMilliseconds),
+    },
+    input.expires,
+  )
 }
 
 function createSnapshotCookie(
@@ -394,22 +427,25 @@ function createSnapshotCookie(
   if (seen.has(key)) throw new InvalidInput("duplicate_cookie_scope")
   seen.add(key)
 
-  return new Cookie({
-    key: input.name,
-    value: validateValue(input.value),
-    domain,
-    path,
-    secure: input.secure,
-    httpOnly: input.httpOnly,
-    hostOnly: input.hostOnly,
-    pathIsDefault: false,
-    expires:
-      input.expires === null ? "Infinity" : new Date(input.expires * 1_000),
-    maxAge: null,
-    sameSite: input.sameSite,
-    creation: new Date(nowMilliseconds),
-    lastAccessed: new Date(nowMilliseconds),
-  })
+  return createImportedCookie(
+    {
+      key: input.name,
+      value: validateValue(input.value),
+      domain,
+      path,
+      secure: input.secure,
+      httpOnly: input.httpOnly,
+      hostOnly: input.hostOnly,
+      pathIsDefault: false,
+      expires:
+        input.expires === null ? "Infinity" : new Date(input.expires * 1_000),
+      maxAge: null,
+      sameSite: input.sameSite,
+      creation: new Date(nowMilliseconds),
+      lastAccessed: new Date(nowMilliseconds),
+    },
+    input.expires,
+  )
 }
 
 function toSnapshotCookie(
@@ -425,9 +461,9 @@ function toSnapshotCookie(
   ) {
     return null
   }
-  const expires = Number.isFinite(expiryTime)
-    ? Math.floor(expiryTime / 1_000)
-    : null
+  const expires =
+    importedExpirySeconds(cookie) ??
+    (Number.isFinite(expiryTime) ? expiryTime / 1_000 : null)
   const sameSiteValue = cookie.sameSite?.toLowerCase()
   const sameSite =
     sameSiteValue === "strict"
@@ -451,6 +487,8 @@ function toSnapshotCookie(
 }
 
 function absoluteCookieExpiry(cookie: Cookie): number {
+  const importedExpiry = importedExpirySeconds(cookie)
+  if (importedExpiry !== undefined) return cookie.expiryTime() ?? Infinity
   // Do not use expiryTime(): it offsets Max-Age from lastAccessed, which
   // CookieJar.getCookies() advances on every outbound request. creation is
   // the receipt time; normalized cookies already carry an absolute expires.
