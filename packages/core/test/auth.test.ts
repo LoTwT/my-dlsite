@@ -50,6 +50,22 @@ function salesHandler(calls: { cookie?: string }[] = []) {
 }
 
 describe("auth", () => {
+  it("preserves subsecond absolute expiry through import, export and restore", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(1_700_000_000_000)
+    try {
+      const expiry = 1_700_000_120.75
+      const harness = authHarness(salesHandler())
+      await harness.auth.importCookies([playSessionCookie({ expires: expiry })])
+      const snapshot = await harness.auth.export()
+      expect(snapshot.cookies[0]?.expires).toBe(expiry)
+      const restored = authHarness(salesHandler())
+      await restored.auth.restore(snapshot)
+      expect((await restored.auth.export()).cookies[0]?.expires).toBe(expiry)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it("validates imported cookies in a candidate jar and replaces the session", async () => {
     const seen: { cookie?: string }[] = []
     const harness = authHarness(salesHandler(seen))

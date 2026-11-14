@@ -8,6 +8,7 @@
 
 ## 当前状态与边界
 
+- LOGIN-CLI-01 正在 `packages/browser-auth` 与 `packages/cli` 实施。独立事务、转换及会话文件模块已有合成检查；实际观察器和 CLI 可执行入口尚未接入。当前边界见 [浏览器登录与 CLI](./specs/browser-login-cli.md)。
 - `packages/core` 已存在，包名 `@my-dlsite/core`，私有、不发布；CORE-01 已实现会话恢复、作品库、文件清单和播放地址。
 - CORE-02 已实现已观察的单 ZIP 原版下载计划：`client.acquisition.plan(workId, { signal? })` 返回 `AcquisitionPlan`。它只生成下载地址和按最终 URL 作用域计算的请求头，不下载、不写文件、不解压，也不支持分卷、序列号或其他交付方式。
 - 根包 `my-dlsite-monorepo` 仍为私有包，不发布；不维护 `exports`、`files`、`imports` 或发布产物，也没有根级 `src/`、`tests/`。
@@ -42,6 +43,7 @@
 
 ## 检查范围与验证
 
+- 新包准备：先运行 `pnpm --filter @my-dlsite/core build`，再运行 `pnpm --filter @my-dlsite/browser-auth browser:install` 显式下载匹配 Chromium，随后按依赖顺序运行 `pnpm --filter @my-dlsite/browser-auth check`、`pnpm --filter @my-dlsite/cli check`。browser-auth 的测试包含专用可见 Chromium 合成测试，需要本机图形会话；测试只使用回环合成页面和 CDP 假 Cookie，不导航 DLsite，也不读取用户 profile。缺少浏览器时该检查失败，不能把纯 mock 结果称为浏览器集成通过。
 - `.gitignore` 保留 HAR 忽略规则（`*.har`、`har-report*.txt`）。原始 HAR 含 Cookie、签名凭据，不提交，也不供检查或构建读取；常规测试不运行真实 DLsite 请求。
 - pre-commit 钩子对整个工作区运行 `pnpm lint` 与 `pnpm format:check`，不修改文件。修改 `simple-git-hooks` 配置后，运行 `pnpm run prepare` 更新已安装的钩子。检查失败时修复后重新提交，不跳过钩子。
 - 修改根配置或文档时，至少运行 `pnpm lint` 与 `pnpm format:check`。

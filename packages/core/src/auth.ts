@@ -425,9 +425,7 @@ function toSnapshotCookie(
   ) {
     return null
   }
-  const expires = Number.isFinite(expiryTime)
-    ? Math.floor(expiryTime / 1_000)
-    : null
+  const expires = Number.isFinite(expiryTime) ? expiryTime / 1_000 : null
   const sameSiteValue = cookie.sameSite?.toLowerCase()
   const sameSite =
     sameSiteValue === "strict"

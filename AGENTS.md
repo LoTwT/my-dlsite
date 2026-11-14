@@ -13,3 +13,5 @@
 ## 项目结构
 
 本仓库是 pnpm workspace monorepo。根目录只放工作区配置、共享工具配置和文档，业务代码放在 `packages/*`。`packages/core`（`@my-dlsite/core`）已实现 CORE-01 的会话、作品库、文件清单与播放地址，以及 CORE-02 的已观察单 ZIP 原版下载计划（`client.acquisition.plan`）。下载、解压、分卷和序列号流程不在 core 内。边界与命令详见 `docs/development.md`，接口与完整性限制见 `docs/specs/core.md`。
+
+`packages/browser-auth` 和 `packages/cli` 正在实施 LOGIN-CLI-01，依赖方向为 CLI → browser-auth/core、browser-auth → core。当前完成范围与待补捕获判据见 `docs/specs/browser-login-cli.md`；不能把内部模块的合成检查称为完整新登录链通过。

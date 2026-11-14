@@ -6,6 +6,7 @@
 
 - [开发指南](./development.md)：环境、命令、验证方式、检查范围、工作区与包边界；修改代码、配置或依赖前阅读。
 - [core 包设计与实现](./specs/core.md)：CORE-01 与 CORE-02 的模块、公开接口、验证依据、错误边界和完整性限制；修改 core 或安排后续交付前阅读。
+- [浏览器登录与 CLI](./specs/browser-login-cli.md)：LOGIN-CLI-01 实施进度、登录事务、Chromium 兼容边界、会话保存和待补捕获判据。
 
 ## 目录约定
 

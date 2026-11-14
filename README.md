@@ -4,6 +4,8 @@ my-dlsite 项目的 pnpm workspace monorepo，私有根包名为 `my-dlsite-mono
 
 `packages/core`（`@my-dlsite/core`）已实现 CORE-01（现有 Play 会话 → 作品库 → 文件清单 → 播放地址）和 CORE-02 的已观察单 ZIP 原版下载计划（`client.acquisition.plan`）。下载器、文件传输、解压和序列号流程仍由调用方负责，不在 core 内实现。
 
+LOGIN-CLI-01 正在新增 `packages/browser-auth` 和 `packages/cli`。当前已有登录事务、Chromium 转换和安全会话文件模块；登录观察器与 CLI 可执行入口尚未接入，完整交互仍待验收，见[实施边界](./docs/specs/browser-login-cli.md)。
+
 ## 技术栈
 
 - [pnpm](https://pnpm.io) - workspace 与包管理
